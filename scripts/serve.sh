@@ -46,7 +46,7 @@ args=(serve "$MODEL" --host "$HOST" --port "$PORT" --name "$NAME"
       --context "$CONTEXT" --parallel "$PARALLEL" --kv-dtype "$KV_DTYPE")
 # VISION=1: image/video input through the containerized Python helper (scripts/vision-helper.sh, needs docker
 # with the NVIDIA runtime and VISION_IMAGE); the checkpoint's vision-f16 tower is loaded by the helper.
-# As of 256258d9 the Flash-Next Zig engine refuses --vision ("this engine takes no image or video rows").
+# Needs 0d1c730+ (256258d9 refused --vision); --vision keeps 4 GiB free, so p4 262k wants RESERVE 11.5.
 if [[ "${VISION:-0}" == 1 ]]; then
   args+=(--vision)
   export MODEL PORT VISION_IMAGE="${VISION_IMAGE:-tensorfold-zig:exl3-572414d}"

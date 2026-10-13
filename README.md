@@ -10,11 +10,12 @@ prefill kernels of [PR #13](https://github.com/kinetick-labs/TensorFold/pull/13)
 Numbers below were measured at `001de3a7` and re-checked at `256258d9` (same token shas; prefill 1085, decode 63.0 / 49.2 / 56.1 fib/chat/fr, multi profile 177.6 / 140.7), through this repo's `scripts/build.sh` and `scripts/serve.sh`,
 on 2026-10-13.
 
-Text only. `VISION=1` exists in `serve.sh` (it adds `--vision` and runs the Python vision helper in a container,
-`scripts/vision-helper.sh`, image `VISION_IMAGE`, default `tensorfold-zig:exl3-572414d`), but **the Flash-Next
-Zig engine currently refuses it**: the server stops with `--vision: this engine takes no image or video rows`.
-The helper itself starts and loads the tower (0.84 GiB, ~3 s); the CUDA release host does not advertise media
-for Flash Next yet. Leave `VISION` unset.
+Vision works from `0d1c730` (branch `fix/zig-flashnext-media`, PR kinetick-labs/TensorFold#18: the CUDA host now
+advertises media for Flash Next served with `--vision`; same engine as 256258d9 otherwise). `VISION=1` adds `--vision` and
+runs the Python vision helper in a container (`scripts/vision-helper.sh`, image `VISION_IMAGE`, default
+`tensorfold-zig:exl3-572414d`, tower 0.84 GiB). `--vision` keeps 4 GiB free for the tower's workspace, so the multi profile
+(p4, 262k, fp8 KV) needs `TENSORFOLD_MEMORY_RESERVE_GIB=11.5`. Checked 2026-10-13: shapes and house test images described
+correctly; p4 smoke 177.7 / 141.1 tok/s aggregate (code/chat) with vision on, 27 GiB available on the box.
 
 ## Summary
 

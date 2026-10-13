@@ -2,14 +2,14 @@
 # Build tensorfold-native (with the CUDA fatbins embedded) from kinetick-labs/TensorFold on a DGX Spark.
 set -euo pipefail
 TF_DIR="${TF_DIR:-$HOME/TensorFold}"
-TF_REF="${TF_REF:-256258d9}"   # PR #14 head this recipe was measured at (rebased on upstream v1.0.9)
+TF_REF="${TF_REF:-0d1c730}"    # 256258d9 (PR #14 head, measured) + media-flag fix (PR #18) for vision
 ZIG="${ZIG:-$(command -v zig || echo "$HOME/zig-0.17.0/zig")}"
 NVCC="${NVCC:-/usr/local/cuda/bin/nvcc}"
 if [[ ! -d "$TF_DIR/.git" ]]; then
   git clone https://github.com/kinetick-labs/TensorFold "$TF_DIR"
 fi
 cd "$TF_DIR"
-git fetch origin perf/zig-exl3-decode
+git fetch origin perf/zig-exl3-decode fix/zig-flashnext-media
 git fetch origin "$TF_REF" 2>/dev/null || true
 git checkout --detach "$TF_REF" 2>/dev/null || git checkout --detach FETCH_HEAD
 echo "[build] $(git log -1 --format='%h %s')"

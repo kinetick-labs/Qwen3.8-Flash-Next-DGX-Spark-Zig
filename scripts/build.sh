@@ -2,15 +2,16 @@
 # Build tensorfold-native (with the CUDA fatbins embedded) from kinetick-labs/TensorFold on a DGX Spark.
 set -euo pipefail
 TF_DIR="${TF_DIR:-$HOME/TensorFold}"
-TF_REF="${TF_REF:-perf/zig-exl3-decode}"
+TF_REF="${TF_REF:-001de3a7}"   # PR #14 head this recipe was measured at
 ZIG="${ZIG:-$(command -v zig || echo "$HOME/zig-0.17.0/zig")}"
 NVCC="${NVCC:-/usr/local/cuda/bin/nvcc}"
 if [[ ! -d "$TF_DIR/.git" ]]; then
   git clone https://github.com/kinetick-labs/TensorFold "$TF_DIR"
 fi
 cd "$TF_DIR"
-git fetch origin "$TF_REF"
-git checkout --detach FETCH_HEAD
+git fetch origin perf/zig-exl3-decode
+git fetch origin "$TF_REF" 2>/dev/null || true
+git checkout --detach "$TF_REF" 2>/dev/null || git checkout --detach FETCH_HEAD
 echo "[build] $(git log -1 --format='%h %s')"
 "$ZIG" version | grep -q '^0\.17\.' || { echo "[build] Zig 0.17.x required (.zig-version)" >&2; exit 2; }
 # -Dnvcc compiles our .cu kernels (fn_exl3 & co.) for sm_121 and embeds them in the binary.

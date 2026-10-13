@@ -1,4 +1,4 @@
-# Multi-session bench — perf/zig-exl3-decode @ 6a9ae92f (same tree as PR #14 head 5fce75f1)
+# Multi-session bench — perf/zig-exl3-decode @ 6a9ae92f (older run; current numbers in README)
 
 One GB10, `scripts/serve.sh` settings (bf16 KV, `TF_FLASHNEXT_PREFILL_ROWS=4096`, cap 4 / −0.6, 95k draft vocab),
 one server per `--parallel` level, measured 2026-10-12.

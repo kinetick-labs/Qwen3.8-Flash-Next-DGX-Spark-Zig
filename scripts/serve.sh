@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 VARS=(PROFILE TF_DIR MODEL TENSORFOLD_CUDA_KERNELS HOST PORT NAME CONTEXT PARALLEL KV_DTYPE EXTRA_ARGS
-      TENSORFOLD_MEMORY_RESERVE_GIB
+      TENSORFOLD_MEMORY_RESERVE_GIB VISION VISION_IMAGE
       TF_FLASHNEXT_PREFILL_ROWS TF_FLASHNEXT_X3_MOE_WINDOW TF_FLASHNEXT_DEPTH TF_FLASHNEXT_CONFIDENCE
       TF_FLASHNEXT_PRODUCT_STREAMS TF_FLASHNEXT_TELEMETRY)
 caller=(); for v in "${VARS[@]}"; do [[ -n "${!v:-}" ]] && caller+=("$v=${!v}"); done
@@ -44,10 +44,19 @@ export TENSORFOLD_CUDA_KERNELS
 
 args=(serve "$MODEL" --host "$HOST" --port "$PORT" --name "$NAME"
       --context "$CONTEXT" --parallel "$PARALLEL" --kv-dtype "$KV_DTYPE")
+# VISION=1: image/video input through the containerized Python helper (scripts/vision-helper.sh, needs docker
+# with the NVIDIA runtime and VISION_IMAGE); the checkpoint's vision-f16 tower is loaded by the helper.
+# As of 256258d9 the Flash-Next Zig engine refuses --vision ("this engine takes no image or video rows").
+if [[ "${VISION:-0}" == 1 ]]; then
+  args+=(--vision)
+  export MODEL PORT VISION_IMAGE="${VISION_IMAGE:-tensorfold-zig:exl3-572414d}"
+  export TENSORFOLD_VISION_PYTHON="$(pwd)/scripts/vision-helper.sh"
+  docker image inspect "$VISION_IMAGE" >/dev/null 2>&1 || { echo "[serve] VISION=1: image $VISION_IMAGE not found (docker pull/load it, or set VISION_IMAGE)" >&2; exit 2; }
+fi
 # shellcheck disable=SC2206
 [[ -n "${EXTRA_ARGS:-}" ]] && args+=($EXTRA_ARGS)
 echo "[serve] $(cd "$TF_DIR" && git log -1 --format='%h %s' 2>/dev/null || echo '?')"
 echo "[serve] http://$HOST:$PORT/v1  model=$NAME  $BIN ${args[*]}"
-echo "[serve] profile=$PROFILE parallel=$PARALLEL context=$CONTEXT kv=$KV_DTYPE"
+echo "[serve] profile=$PROFILE parallel=$PARALLEL context=$CONTEXT kv=$KV_DTYPE vision=${VISION:-0}"
 env | grep -E '^(TF_FLASHNEXT_|TENSORFOLD_MEMORY)' | sort | sed 's/^/[serve] /' || true
 exec "$BIN" "${args[@]}"

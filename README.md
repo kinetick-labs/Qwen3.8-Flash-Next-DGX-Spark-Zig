@@ -4,13 +4,17 @@ Serve **Qwen3.8 Flash-Next** (`qwen4_exp`) from turboderp's **EXL3 4.05 bpw** pa
 (DGX Spark, 128 GB unified memory) with the native Zig engine of
 [kinetick-labs/TensorFold](https://github.com/kinetick-labs/TensorFold) (`tensorfold-native`, no Python runtime).
 
-Build from **[kinetick-labs/TensorFold](https://github.com/kinetick-labs/TensorFold) `001de3a7`**, the head of
-branch `perf/zig-exl3-decode` ([PR #14](https://github.com/kinetick-labs/TensorFold/pull/14), stacked on the
+Build from **[kinetick-labs/TensorFold](https://github.com/kinetick-labs/TensorFold) `256258d9`**, the head of
+branch `perf/zig-exl3-decode` rebased on upstream v1.0.9 ([PR #14](https://github.com/kinetick-labs/TensorFold/pull/14), stacked on the
 prefill kernels of [PR #13](https://github.com/kinetick-labs/TensorFold/pull/13)). `scripts/build.sh` pins it.
-All numbers below were measured at that commit, through this repo's `scripts/build.sh` and `scripts/serve.sh`,
+Numbers below were measured at `001de3a7` and re-checked at `256258d9` (same token shas; prefill 1085, decode 63.0 / 49.2 / 56.1 fib/chat/fr, multi profile 177.6 / 140.7), through this repo's `scripts/build.sh` and `scripts/serve.sh`,
 on 2026-10-13.
 
-Text only: the Zig engine does not load the vision tower.
+Text only. `VISION=1` exists in `serve.sh` (it adds `--vision` and runs the Python vision helper in a container,
+`scripts/vision-helper.sh`, image `VISION_IMAGE`, default `tensorfold-zig:exl3-572414d`), but **the Flash-Next
+Zig engine currently refuses it**: the server stops with `--vision: this engine takes no image or video rows`.
+The helper itself starts and loads the tower (0.84 GiB, ~3 s); the CUDA release host does not advertise media
+for Flash Next yet. Leave `VISION` unset.
 
 ## Summary
 
@@ -65,7 +69,7 @@ Tokenizer, chat template and config are read from the same folder.
 ## 2. Build
 
 ```bash
-TF_DIR=$HOME/TensorFold scripts/build.sh      # checks out 001de3a7
+TF_DIR=$HOME/TensorFold scripts/build.sh      # checks out 256258d9 (Zig 0.17.0)
 ```
 
 which runs, from the clone root (`build.zig` is at the root):

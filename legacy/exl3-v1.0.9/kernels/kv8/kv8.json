@@ -1,0 +1,690 @@
+{
+ "source": "ghcr.io/miaai-lab/qwen3.8-flash-next-single-dgx-spark-tensorfold:zig-db28187-4144696f21e3:/opt/tensorfold/share/tensorfold/cuda/sm121",
+ "generator": "tools/zig/flashnext_aot.py",
+ "target": [
+  "cuda",
+  121,
+  32
+ ],
+ "kernels": [
+  {
+   "fn": "_attn_prep8",
+   "hash": "15e8b7f4dc393a0b65f4f0b6bb001fbd223b984679e444861a09155e4fad9061",
+   "name": "_attn_prep8",
+   "num_warps": 2,
+   "num_ctas": 1,
+   "shared": 8,
+   "global_scratch": 0,
+   "global_align": 1,
+   "profile_scratch": 0,
+   "pdl": false,
+   "params": [
+    {
+     "name": "P",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "POS0",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "QW",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "KW",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "IW",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "INV",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "Q",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "KC",
+     "type": "*fp8e4nv",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "VC",
+     "type": "*fp8e4nv",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "KS",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "IQ",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "IKC",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "ROPE",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "DELTA",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "length",
+     "type": "i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "eps",
+     "type": "fp32",
+     "div16": false,
+     "nospec": false
+    }
+   ],
+   "consts": {
+    "PW": {
+     "int": 13952
+    },
+    "NQ": {
+     "int": 24
+    },
+    "NKV": {
+     "int": 2
+    },
+    "HD": {
+     "int": 256
+    },
+    "NI": {
+     "int": 4
+    },
+    "IHD": {
+     "int": 128
+    },
+    "HALF": {
+     "int": 32
+    },
+    "MODE": {
+     "int": 2
+    },
+    "S1": {
+     "int": 11
+    },
+    "S2": {
+     "int": 10
+    }
+   },
+   "function": "tensorfold.families.qwen4_exp.cuda.kv8._attn_prep8",
+   "tp": [
+    1
+   ],
+   "cubin_sha256": "f7a60acd87d44f996b01abcf51cc045180583cc393e19b1a18f35f6e21465f28",
+   "n_regs": null,
+   "n_spills": null
+  },
+  {
+   "fn": "_attn_prep8",
+   "hash": "1c5063d55f94a6c696be1bad450751c57f2052b6fc08a6f90dd298152692a32d",
+   "name": "_attn_prep8",
+   "num_warps": 2,
+   "num_ctas": 1,
+   "shared": 8,
+   "global_scratch": 0,
+   "global_align": 1,
+   "profile_scratch": 0,
+   "pdl": false,
+   "params": [
+    {
+     "name": "P",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "POS0",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "QW",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "KW",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "IW",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "INV",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "Q",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "KC",
+     "type": "*fp8e4nv",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "VC",
+     "type": "*fp8e4nv",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "KS",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "IQ",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "IKC",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "ROPE",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "DELTA",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "length",
+     "type": "i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "eps",
+     "type": "fp32",
+     "div16": false,
+     "nospec": false
+    }
+   ],
+   "consts": {
+    "PW": {
+     "int": 13952
+    },
+    "NQ": {
+     "int": 24
+    },
+    "NKV": {
+     "int": 2
+    },
+    "HD": {
+     "int": 256
+    },
+    "NI": {
+     "int": 4
+    },
+    "IHD": {
+     "int": 128
+    },
+    "HALF": {
+     "int": 32
+    },
+    "MODE": {
+     "int": 0
+    },
+    "S1": {
+     "int": 11
+    },
+    "S2": {
+     "int": 10
+    }
+   },
+   "function": "tensorfold.families.qwen4_exp.cuda.kv8._attn_prep8",
+   "tp": [
+    1
+   ],
+   "cubin_sha256": "92cce7dff278115946c6ba7bbc3d8e051093d6f8e33eac7c7f3fbd1b080befa0",
+   "n_regs": null,
+   "n_spills": null
+  },
+  {
+   "fn": "_attn_prep8",
+   "hash": "b4b6e4021676c97bfbb07c19db9fa20c9d107c4e7f0569a3a54f6b41a885488d",
+   "name": "_attn_prep8",
+   "num_warps": 2,
+   "num_ctas": 1,
+   "shared": 8,
+   "global_scratch": 0,
+   "global_align": 1,
+   "profile_scratch": 0,
+   "pdl": false,
+   "params": [
+    {
+     "name": "P",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "POS0",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "QW",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "KW",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "IW",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "INV",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "Q",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "KC",
+     "type": "*fp8e4nv",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "VC",
+     "type": "*fp8e4nv",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "KS",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "IQ",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "IKC",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "ROPE",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "DELTA",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "length",
+     "type": "i32",
+     "div16": false,
+     "nospec": false
+    },
+    {
+     "name": "eps",
+     "type": "fp32",
+     "div16": false,
+     "nospec": false
+    }
+   ],
+   "consts": {
+    "PW": {
+     "int": 13952
+    },
+    "NQ": {
+     "int": 24
+    },
+    "NKV": {
+     "int": 2
+    },
+    "HD": {
+     "int": 256
+    },
+    "NI": {
+     "int": 4
+    },
+    "IHD": {
+     "int": 128
+    },
+    "HALF": {
+     "int": 32
+    },
+    "MODE": {
+     "int": 2
+    },
+    "S1": {
+     "int": 11
+    },
+    "S2": {
+     "int": 10
+    }
+   },
+   "function": "tensorfold.families.qwen4_exp.cuda.kv8._attn_prep8",
+   "tp": [
+    1
+   ],
+   "cubin_sha256": "f7a60acd87d44f996b01abcf51cc045180583cc393e19b1a18f35f6e21465f28",
+   "n_regs": null,
+   "n_spills": null
+  },
+  {
+   "fn": "_chunks8",
+   "hash": "15696b19b886c82cabcdc79e654c35dd0896ca16154e96c2a7b72fe277bd84ca",
+   "name": "_chunks8",
+   "num_warps": 4,
+   "num_ctas": 1,
+   "shared": 24576,
+   "global_scratch": 0,
+   "global_align": 1,
+   "profile_scratch": 0,
+   "pdl": false,
+   "params": [
+    {
+     "name": "Q",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "KC",
+     "type": "*fp8e4nv",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "VC",
+     "type": "*fp8e4nv",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "KS",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "POS0",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "PO",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "PM",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "PL",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "IDS",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "NKR",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "SPR",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    }
+   ],
+   "consts": {
+    "H": {
+     "int": 24
+    },
+    "HK": {
+     "int": 2
+    },
+    "D": {
+     "int": 256
+    },
+    "G": {
+     "int": 12
+    },
+    "CH": {
+     "int": 512
+    },
+    "NCH": {
+     "int": 2
+    },
+    "SCALE": {
+     "f32": 1031798784
+    },
+    "IDW": {
+     "int": 2052
+    },
+    "QSA": {
+     "int": 0
+    }
+   },
+   "function": "tensorfold.families.qwen4_exp.cuda.kv8._chunks8",
+   "tp": [
+    1
+   ],
+   "cubin_sha256": "080cc2ff65adf480d4cc9205052940ad748a75a0b6bcf8ef890c04a6b1c76d3c",
+   "n_regs": null,
+   "n_spills": null
+  },
+  {
+   "fn": "_chunks8",
+   "hash": "3f44c5c1233dcbd3a5e8d48fd1f128d6925927c8f812b9c279f94d57aef2ce87",
+   "name": "_chunks8",
+   "num_warps": 4,
+   "num_ctas": 1,
+   "shared": 24576,
+   "global_scratch": 0,
+   "global_align": 1,
+   "profile_scratch": 0,
+   "pdl": false,
+   "params": [
+    {
+     "name": "Q",
+     "type": "*bf16",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "KC",
+     "type": "*fp8e4nv",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "VC",
+     "type": "*fp8e4nv",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "KS",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "POS0",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "PO",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "PM",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "PL",
+     "type": "*fp32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "IDS",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "NKR",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    },
+    {
+     "name": "SPR",
+     "type": "*i32",
+     "div16": true,
+     "nospec": false
+    }
+   ],
+   "consts": {
+    "H": {
+     "int": 24
+    },
+    "HK": {
+     "int": 2
+    },
+    "D": {
+     "int": 256
+    },
+    "G": {
+     "int": 12
+    },
+    "CH": {
+     "int": 512
+    },
+    "NCH": {
+     "int": 5
+    },
+    "SCALE": {
+     "f32": 1031798784
+    },
+    "IDW": {
+     "int": 2052
+    },
+    "QSA": {
+     "int": 1
+    }
+   },
+   "function": "tensorfold.families.qwen4_exp.cuda.kv8._chunks8",
+   "tp": [
+    1
+   ],
+   "cubin_sha256": "5654be651d9cc0f2ce93e12a3e1593c5242c6b1d8564eb4f5fe1559c692246b3",
+   "n_regs": null,
+   "n_spills": null
+  }
+ ]
+}

@@ -3,6 +3,30 @@
 Newest first. This recipe serves one DGX Spark. The image is `tensorfold-qwen38:zig-db28187`, built by
 `scripts/prepare.sh` from TensorFold `db281878` plus `patches/`.
 
+## 2026-10-28 — rebased onto MiaAI-Lab's v1.1.4 recipe (`fd3f43e`)
+
+This fork now tracks MiaAI-Lab's recipe for TensorFold v1.1.4 instead of carrying an EXL3 recipe of its own.
+The headline numbers in `README.md` are theirs (NVIDIA's FP4 checkpoint, sparkDash) and were not re-measured
+here; the audit that decided the rebase is `docs/audit-v1.1.4-rebase.md`.
+
+- **Engine pin.** `TF_REPO`/`TF_REF` point at `kinetick-labs/TensorFold` `integration/1.1.4-mia17`, which is
+  v1.1.4 (`eab85828`) plus their seventeen patches as seventeen commits. The tree is byte-identical to a
+  pristine v1.1.4 checkout after applying the series (`48745f0d9bc3` on both sides), so the pin is a
+  provenance change, not a content change: it gives our own engine work a revision to sit on.
+- **`patches/` is empty**, for the same reason (see `patches/README.md`). `scripts/prepare.sh` skips the
+  directory, and the image's `tf.patches` label still hashes `TF_REPO`/`TF_REF`, so a pin change rebuilds.
+- **Retired from our own recipe**, each for a reason that is in the audit: the FP8-KV Triton cubins and
+  `scripts/add-kv8.sh` (v1.1.4's `--kv-cache fp8` is engine glue, and the image embeds its kernel set), the
+  vision-helper container (v1.1.4 offers `--vision` from the host and the recipe runs the helper in its own
+  image), our `--vision` media-advertisement engine fix (v1.1.4 has `vision_offer`), the `single`/`multi`
+  profiles, `TF_FLASHNEXT_PREFILL_ROWS=4096`, and our running-product draft stop (their patch `0017` is the
+  same rule, re-expressed).
+- **Kept**: the EXL3 4.05 bpw arm, unchanged and on its old pin, under `legacy/exl3-v1.0.9/`, with its own
+  measurements and its own instrument. It cannot be served on this engine, and the audit says why.
+- **Not measured**: no build, serve or bench ran for this change. The next pass owes one build of the pinned
+  revision and one completion on the Spark before any figure is quoted from this repository.
+
+
 ## Unreleased
 
 **Measured gains of the v1.1.4 build (patches 0001 to 0017) over the db281878 build (patches 0001 to 0015), sparkDash on the same Spark, 2026-10-27.**

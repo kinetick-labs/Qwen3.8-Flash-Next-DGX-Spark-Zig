@@ -69,6 +69,9 @@ image_hash() {
     echo "$TF_REPO $TF_REF zig-$ZIG_VERSION $ZIG_SHA256 $BASE_IMAGE jpeg-$LIBJPEG_TURBO_VERSION-$LIBJPEG_TURBO_SHA256 webp-$LIBWEBP_VERSION-$LIBWEBP_SHA256 grammar-$TF_RELEASE_VERSION-$TF_RELEASE_AARCH64_SHA256"
   ) | sha256sum | cut -c1-12
 }
+# No prebuilt image for this fork: TF_REPO/TF_REF enter image_hash(), so the tag under MiaAI-Lab's GHCR name never
+# matches and prepare.sh falls back to a local build (it warns "could not pull"). Set GHCR_IMAGE to a registry of our
+# own once we publish one.
 GHCR_IMAGE="${GHCR_IMAGE:-ghcr.io/miaai-lab/qwen3.8-flash-next-single-dgx-spark-tensorfold}"
 IMAGE_TAG="${IMAGE_TAG:-}"
 IMAGE_DIGEST="${IMAGE_DIGEST:-}"

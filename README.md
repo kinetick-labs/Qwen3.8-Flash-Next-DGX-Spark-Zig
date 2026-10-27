@@ -1,7 +1,7 @@
 <h1 align="center">Qwen3.8 Flash Next on one DGX Spark (TensorFold)</h1>
 
 <p align="center">
-  <sub>by <a href="https://x.com/MiaAI_lab">Mia's AI Lab</a></sub>
+  <sub>by <a href="https://x.com/MiaAI_lab">Mia's AI Lab</a> — this fork maintained by kinetick-labs</sub>
   <br><br>
   <a href="https://github.com/sponsors/MiaAI-Lab" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin:0 8px;vertical-align:middle;"><img src="https://img.shields.io/badge/Sponsor%20me%20on%20GitHub-181717?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Sponsor me on GitHub" height="28" style="height:28px;width:auto;vertical-align:middle;border:0;" /></a>
   <a href="https://x.com/MiaAI_lab" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin:0 8px;vertical-align:middle;"><img src="https://img.shields.io/badge/Follow%20me%20on%20X-000000?style=for-the-badge&logo=x&logoColor=white" alt="Follow Mia on X" height="28" style="height:28px;width:auto;vertical-align:middle;border:0;" /></a>
@@ -17,6 +17,27 @@ Serve **Qwen3.8 Flash Next** from a single NVIDIA DGX Spark (GB10, 128 GB) throu
 [TensorFold](https://github.com/ashhart/TensorFold)'s Zig engine, `tensorfold-native` (release
 [v1.1.4](https://github.com/ashhart/TensorFold/releases/tag/v1.1.4), commit `eab85828`, with this recipe's patches on top), in NVIDIA's PyTorch container. One GPU,
 with image and video input (`VISION=1`). `VISION=0` serves text only.
+
+## This fork (kinetick-labs)
+
+A thin fork of [MiaAI-Lab's recipe](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold)
+at `fd3f43e`, rebased 2026-10-28. Two things differ from upstream's:
+
+- **The pin.** `scripts/config.sh` builds `TF_REPO=kinetick-labs/TensorFold` at `integration/1.1.4-mia17`: TensorFold
+  v1.1.4 (`eab85828`) with MiaAI-Lab's seventeen patches as seventeen commits. Its tree is byte-identical to a pristine
+  v1.1.4 checkout after `git apply patches/*.patch` in filename order (both trees hash `48745f0d9bc3`), so the pin loses
+  nothing — the point is that our own engine work has a revision to sit on instead of a patch replay at image build time.
+  `patches/` is empty for that reason; `patches/README.md` says so and why.
+- **The audit.** [`docs/audit-v1.1.4-rebase.md`](docs/audit-v1.1.4-rebase.md) records what this base retires from the
+  recipe this repository used to carry — the EXL3 4.05 bpw arm on our v1.0.9 engine — fix by fix, with the evidence:
+  the kv8 Triton cubins, the vision-helper container, the `--vision` media-advertisement fix, the `single`/`multi`
+  profiles, our `TF_FLASHNEXT_PREFILL_ROWS` and product-stop settings (their patch `0017` is the same rule). Nothing of
+  ours survives here except the instrument: the EXL3 arm cannot be served on this engine and is kept, unchanged and
+  reproducible, under [`legacy/exl3-v1.0.9/`](legacy/exl3-v1.0.9/README.md) on its old pin.
+
+**The tables below are MiaAI-Lab's measurements**, taken on NVIDIA's FP4 checkpoint with
+[sparkDash](https://github.com/MiaAI-Lab/sparkDash); they have not been re-measured in this fork, and they are not
+comparable with the EXL3 numbers in `legacy/exl3-v1.0.9/` (different checkpoint, different client).
 
 The default checkpoint is NVIDIA's FP4 QAD export: routed experts in NVFP4 (group size 16, CSF-compressed scale factors),
 attention and shared-expert linears in MXFP8, the MTP experts and the vision tower quantized too (MXFP8 attention, W4A16

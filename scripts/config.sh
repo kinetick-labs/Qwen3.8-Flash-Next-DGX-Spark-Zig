@@ -39,11 +39,16 @@ esac
 MODEL_REVISION="${MODEL_REVISION:-}"
 unset _pin
 
-# The engine: TensorFold's Zig engine (tensorfold-native), built from TF_REPO at TF_REF (the v1.1.4 release) with patches/*.patch
-# applied (git apply in the checkout's root), with Zig ZIG_VERSION. Only the Zig build goes into the image, plus the two
+# The engine: TensorFold's Zig engine (tensorfold-native), built from TF_REPO at TF_REF with patches/*.patch applied
+# (git apply in the checkout's root), with Zig ZIG_VERSION. Only the Zig build goes into the image, plus the two
 # image decoders the engine wants (libjpeg-turbo for JPEG, libwebp's decoder for WebP), built from pinned sources.
-TF_REPO="${TF_REPO:-https://github.com/ashhart/TensorFold.git}"
-TF_REF="${TF_REF:-eab8582819688325e371907e4706e1c602b8a273}"   # v1.1.4
+#
+# This fork pins kinetick-labs/TensorFold's integration/1.1.4-mia17: TensorFold v1.1.4 (eab85828) plus MiaAI-Lab's
+# seventeen recipe patches, one commit each. Its tree is byte-identical to a v1.1.4 checkout after `git apply` of the
+# series in filename order (both trees hash 48745f0d9bc3), so patches/ here is deliberately empty - the pin carries
+# them, and replaying them would be a zero-delta overlay. See docs/audit-v1.1.4-rebase.md section 2.
+TF_REPO="${TF_REPO:-https://github.com/kinetick-labs/TensorFold.git}"
+TF_REF="${TF_REF:-fa6f9e18f529d416ca60d53d2ea17a8af483ae2b}"   # v1.1.4 + MiaAI-Lab patches 0001-0017
 ZIG_VERSION="${ZIG_VERSION:-0.17.0}"
 ZIG_SHA256="${ZIG_SHA256:-9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8}"
 BASE_IMAGE="${BASE_IMAGE:-nvcr.io/nvidia/pytorch:26.07-py3}"

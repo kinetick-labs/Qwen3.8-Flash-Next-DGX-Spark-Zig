@@ -21,23 +21,29 @@ with image and video input (`VISION=1`). `VISION=0` serves text only.
 ## This fork (kinetick-labs)
 
 A thin fork of [MiaAI-Lab's recipe](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold)
-at `fd3f43e`, rebased 2026-10-28. Two things differ from upstream's:
+at `fd3f43e`, rebased onto **TensorFold v1.1.7** on 2026-10-28. Three things differ from upstream's recipe:
 
-- **The pin.** `scripts/config.sh` builds `TF_REPO=kinetick-labs/TensorFold` at `integration/1.1.4-mia17`: TensorFold
-  v1.1.4 (`eab85828`) with MiaAI-Lab's seventeen patches as seventeen commits. Its tree is byte-identical to a pristine
-  v1.1.4 checkout after `git apply patches/*.patch` in filename order (both trees hash `48745f0d9bc3`), so the pin loses
-  nothing — the point is that our own engine work has a revision to sit on instead of a patch replay at image build time.
-  `patches/` is empty for that reason; `patches/README.md` says so and why.
-- **The audit.** [`docs/audit-v1.1.4-rebase.md`](docs/audit-v1.1.4-rebase.md) records what this base retires from the
-  recipe this repository used to carry — the EXL3 4.05 bpw arm on our v1.0.9 engine — fix by fix, with the evidence:
-  the kv8 Triton cubins, the vision-helper container, the `--vision` media-advertisement fix, the `single`/`multi`
-  profiles, our `TF_FLASHNEXT_PREFILL_ROWS` and product-stop settings (their patch `0017` is the same rule). Nothing of
-  ours survives here except the instrument: the EXL3 arm cannot be served on this engine and is kept, unchanged and
-  reproducible, under [`legacy/exl3-v1.0.9/`](legacy/exl3-v1.0.9/README.md) on its old pin.
+- **The base is v1.1.7, not v1.1.4 + their seventeen patches.** 1.1.5 and 1.1.7 ship the prompt path that
+  series was written for (the NVFP4 prompt expert tile, the fused hyper-connections, the 128x256 prompt GEMM)
+  and the n-gram pread reader, with upstream's own exactness gates, so replaying those patches on v1.1.7 would
+  re-implement them. Fifteen of the seventeen are therefore **not** carried; the two that are — the NVIDIA FP4
+  vision tower's dequant at load and the 16384-token image budget — are lossless and have no upstream
+  equivalent.
+- **The pin.** `scripts/config.sh` builds `TF_REPO=kinetick-labs/TensorFold` at `integration/1.1.7-vision`:
+  v1.1.7 (`c5953415e`) plus those two patches as commits. Its tree is byte-identical to a pristine v1.1.7
+  checkout after `git apply` of the two (both trees hash `38165d03c8`), so the pin loses nothing — the point is
+  that our engine work has a revision to sit on instead of a patch replay at image build time. `patches/` is
+  empty for that reason; `patches/README.md` says so and why.
+- **The quality trade is explicit.** MiaAI-Lab's default KV cache is fp8 — 1.84x the pool, lossy ("about 98.8%
+  top-1 agreement with a bf16 cache" in their README) — and it is what makes their 5 x 262,144-token windows
+  fit. This fork defaults to **bf16, the exact cache**, with `PARALLEL=3` at the full window, and leaves
+  `KV_DTYPE=fp8` + `PARALLEL=5` as the opt-in trade. `docs/audit-v1.1.7-rebase.md` prices it and lists what is
+  still unported (the stop rule, keep-late, the sampled-draft machinery).
 
-**The tables below are MiaAI-Lab's measurements**, taken on NVIDIA's FP4 checkpoint with
-[sparkDash](https://github.com/MiaAI-Lab/sparkDash); they have not been re-measured in this fork, and they are not
-comparable with the EXL3 numbers in `legacy/exl3-v1.0.9/` (different checkpoint, different client).
+**The tables below are MiaAI-Lab's measurements**, taken on TensorFold v1.1.4 on NVIDIA's FP4 checkpoint with
+[sparkDash](https://github.com/MiaAI-Lab/sparkDash), at their defaults (fp8 KV, five streams). They have not
+been re-measured in this fork, they were not taken on this pin, and they are not comparable with the EXL3
+numbers in `legacy/exl3-v1.0.9/` (different checkpoint, different client).
 
 The default checkpoint is NVIDIA's FP4 QAD export: routed experts in NVFP4 (group size 16, CSF-compressed scale factors),
 attention and shared-expert linears in MXFP8, the MTP experts and the vision tower quantized too (MXFP8 attention, W4A16

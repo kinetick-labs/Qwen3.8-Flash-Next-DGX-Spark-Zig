@@ -1,30 +1,41 @@
 # Changelog
 
-Newest first. This recipe serves one DGX Spark. The image is `tensorfold-qwen38:zig-db28187`, built by
-`scripts/prepare.sh` from TensorFold `db281878` plus `patches/`.
+Newest first. This recipe serves one DGX Spark. The image is `tensorfold-qwen38:<tag>-<sha>`, built by
+`scripts/prepare.sh` from the revision `scripts/config.sh` pins (`TF_REPO`/`TF_REF`, TensorFold v1.1.7 plus
+two lossless vision patches) with whatever `patches/` holds (nothing, by design).
 
-## 2026-10-28 — rebased onto MiaAI-Lab's v1.1.4 recipe (`fd3f43e`)
+## 2026-10-28 — rebased onto MiaAI-Lab's recipe and onto TensorFold v1.1.7
 
-This fork now tracks MiaAI-Lab's recipe for TensorFold v1.1.4 instead of carrying an EXL3 recipe of its own.
-The headline numbers in `README.md` are theirs (NVIDIA's FP4 checkpoint, sparkDash) and were not re-measured
-here; the audit that decided the rebase is `docs/audit-v1.1.4-rebase.md`.
+This fork now tracks MiaAI-Lab's recipe for TensorFold, on **upstream v1.1.7** instead of carrying an EXL3
+recipe of its own. The headline numbers in `README.md` are MiaAI-Lab's (v1.1.4, NVIDIA's FP4 checkpoint,
+sparkDash, their defaults) and were not re-measured here; the audits that decided the rebase are
+`docs/audit-v1.1.7-rebase.md` (the patch series and the quality trade) and `docs/audit-v1.1.4-rebase.md`
+(this repository's own additions, fix by fix).
 
-- **Engine pin.** `TF_REPO`/`TF_REF` point at `kinetick-labs/TensorFold` `integration/1.1.4-mia17`, which is
-  v1.1.4 (`eab85828`) plus their seventeen patches as seventeen commits. The tree is byte-identical to a
-  pristine v1.1.4 checkout after applying the series (`48745f0d9bc3` on both sides), so the pin is a
-  provenance change, not a content change: it gives our own engine work a revision to sit on.
-- **`patches/` is empty**, for the same reason (see `patches/README.md`). `scripts/prepare.sh` skips the
-  directory, and the image's `tf.patches` label still hashes `TF_REPO`/`TF_REF`, so a pin change rebuilds.
-- **Retired from our own recipe**, each for a reason that is in the audit: the FP8-KV Triton cubins and
-  `scripts/add-kv8.sh` (v1.1.4's `--kv-cache fp8` is engine glue, and the image embeds its kernel set), the
-  vision-helper container (v1.1.4 offers `--vision` from the host and the recipe runs the helper in its own
-  image), our `--vision` media-advertisement engine fix (v1.1.4 has `vision_offer`), the `single`/`multi`
-  profiles, `TF_FLASHNEXT_PREFILL_ROWS=4096`, and our running-product draft stop (their patch `0017` is the
-  same rule, re-expressed).
+- **Engine pin.** `TF_REPO`/`TF_REF` point at `kinetick-labs/TensorFold` `integration/1.1.7-vision`, which is
+  v1.1.7 (`c5953415e`) plus two of MiaAI-Lab's patches as commits: the NVIDIA FP4 vision tower's dequant at
+  load, and the per-request image-token budget at 16384. Tree-identical to a pristine v1.1.7 after the two
+  (`38165d03c8` on both sides).
+- **Fifteen of their seventeen patches are not carried**, because 1.1.5 and 1.1.7 ship the prompt path and the
+  n-gram reader they were written for (their `0004` and `0013` exist upstream under the same filenames, with
+  kernel-contract entries), and the rest needs a port onto 1.1.7. The audit gives one line and the evidence
+  per patch, and lists the four port candidates by value.
+- **`patches/` is empty**, for the same provenance reason as before (`patches/README.md`).
+- **The recipe-side knobs of the dropped patches are gone, not inert.** The pin reads none of
+  `TF_FLASHNEXT_PROMPT_HC2`, `PROMPT_GEMM2`, `PROMPT_EXPERT_TILE_ROWS`, `HEAD_PIECE`, `GATHER_READ`,
+  `DRAFT_AHEAD`, `KEEP_LATE`, `SAMPLED_HEADS`, `SAMPLE_CAND`, `GATHER_EARLY`, `HOST_DRAW_THREADS`,
+  `SHARED_SIDE`, `GDN_LANES`, `PREFILL_TAIL`, `PRODUCT_STREAMS`; `scripts/config.sh` says where the
+  capability now lives instead of exporting switches that do nothing.
+- **Quality before streams.** `KV_DTYPE` now defaults to `bf16` (the exact cache) and `PARALLEL` to 3 at the
+  full 262,144-token window; `KV_DTYPE=fp8` + `PARALLEL=5` is the opt-in trade, priced in the README and the
+  audit (1.84x the pool, ~98.8% top-1 agreement with bf16). `TF_FLASHNEXT_CONFIDENCE` returns to the engine's
+  own 0.6: the db281878 running-product rule was MiaAI-Lab's patch 0017 and is not carried.
 - **Kept**: the EXL3 4.05 bpw arm, unchanged and on its old pin, under `legacy/exl3-v1.0.9/`, with its own
-  measurements and its own instrument. It cannot be served on this engine, and the audit says why.
-- **Not measured**: no build, serve or bench ran for this change. The next pass owes one build of the pinned
-  revision and one completion on the Spark before any figure is quoted from this repository.
+  measurements and its own instrument. It cannot be served on this engine, and the v1.1.4 audit says why.
+- **Not measured**: no image build through `scripts/prepare.sh`, no serve and no bench ran for this change.
+  What was verified is in the PR: the `git apply` matrices, the tree-hash identity, the shell and Python
+  syntax gates, and a `fatbins native` build of the pinned revision on the Spark.
+
 
 
 ## Unreleased

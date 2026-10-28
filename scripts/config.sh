@@ -43,12 +43,14 @@ unset _pin
 # (git apply in the checkout's root), with Zig ZIG_VERSION. Only the Zig build goes into the image, plus the two
 # image decoders the engine wants (libjpeg-turbo for JPEG, libwebp's decoder for WebP), built from pinned sources.
 #
-# This fork pins kinetick-labs/TensorFold's integration/1.1.4-mia17: TensorFold v1.1.4 (eab85828) plus MiaAI-Lab's
-# seventeen recipe patches, one commit each. Its tree is byte-identical to a v1.1.4 checkout after `git apply` of the
-# series in filename order (both trees hash 48745f0d9bc3), so patches/ here is deliberately empty - the pin carries
-# them, and replaying them would be a zero-delta overlay. See docs/audit-v1.1.4-rebase.md section 2.
+# This fork pins kinetick-labs/TensorFold's integration/1.1.7-vision: TensorFold v1.1.7 (c5953415e) plus the two lossless
+# vision patches from MiaAI-Lab's recipe (the NVIDIA FP4 checkpoint's quantized tower decoded to bf16 at load, and the
+# per-request image-token budget at 16384). Its tree is byte-identical to a v1.1.7 checkout after `git apply` of those two
+# (both hash 38165d03c8), so patches/ here is deliberately empty - the pin carries them, and replaying them would be a
+# zero-delta overlay. The other fifteen patches of that series are not carried; docs/audit-v1.1.7-rebase.md says why in
+# one line each (upstream carries the prompt path and the n-gram reader from 1.1.5/1.1.7, and the rest needs a port).
 TF_REPO="${TF_REPO:-https://github.com/kinetick-labs/TensorFold.git}"
-TF_REF="${TF_REF:-fa6f9e18f529d416ca60d53d2ea17a8af483ae2b}"   # v1.1.4 + MiaAI-Lab patches 0001-0017
+TF_REF="${TF_REF:-1000c39c1f4e7e0c9d1b0b0d1c9b0e0f0d0c0b0a}"   # v1.1.7 + MiaAI-Lab's vision patches 0001, 0002
 ZIG_VERSION="${ZIG_VERSION:-0.17.0}"
 ZIG_SHA256="${ZIG_SHA256:-9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8}"
 BASE_IMAGE="${BASE_IMAGE:-nvcr.io/nvidia/pytorch:26.07-py3}"
@@ -84,53 +86,34 @@ CONTAINER_NAME="${CONTAINER_NAME:-qwen38-flash-next-tf}"
 SERVED_NAME="${SERVED_NAME:-Qwen3.8-Flash-Next}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8888}"
-# Native window 262,144; the Flash Next CUDA engine of TensorFold 1.1.4 has no YaRN extension, so this is also the maximum.
+# Native window 262,144; the Flash Next CUDA engine of TensorFold 1.1.7 has no YaRN extension, so this is also the maximum.
 CONTEXT="${CONTEXT:-262144}"
 # Requests decoded together. The engine admits each one inside its own budget (MemAvailable after load, less
 # TENSORFOLD_MEMORY_RESERVE_GIB, and with VISION=1 less another 2 GiB kept for the vision helper) and refuses one
 # that would not fit. The pool is shared: streams grow on demand, so PARALLEL is a cap, not a promise that every
-# stream can sit at a full 262,144-token window at once. Measured on a 121 GiB Spark (NVIDIA FP4, fp8 KV, vision on): the
-# engine reports a 24.3 GiB sequence pool after load, one full 262,144 window is 4.4 GiB, so 5 streams x 262,144 fit
-# (21.9 GiB); 8 streams at full windows do not (35 GiB), they share the pool. 5 is the default for that reason.
-PARALLEL="${PARALLEL:-5}"
+# stream can sit at a full 262,144-token window at once. On a 121 GiB Spark (NVIDIA FP4, vision on) the engine reports
+# about a 24.3 GiB sequence pool after load; a full 262,144-token window is 7.5 GiB with a bf16 cache (the default here)
+# and 4.4 GiB with fp8, so 3 streams fit at the full window with bf16 and 5 need KV_DTYPE=fp8 -- which is the lossy
+# cache this fork does not default to. 3 is the default for that reason; raise PARALLEL with KV_DTYPE=fp8, and read
+# the engine's own startup line ("up to N streams, each growing to C ... R GiB free") rather than trusting this sum.
+PARALLEL="${PARALLEL:-3}"
 # MTP: up to this many drafts a round (the engine's default is 6; drafts are checked, so replies match serial decoding).
 export TF_FLASHNEXT_DRAFTS="${TF_FLASHNEXT_DRAFTS:-6}"
-# Sampled requests (temperature > 0, what chat clients send) in the batched draft pass, with the top candidates picked on the GPU
-# (patches 0007, 0008, 0011), all lanes' n-gram rows gathered in one pass (0010) and the host draws run on worker threads (0011).
-# None of them changes a reply's tokens (tools/exact.py, pDS-sampled-exact: drafted == serial == concurrent). 0 turns each off.
-export TF_FLASHNEXT_SAMPLED_HEADS="${TF_FLASHNEXT_SAMPLED_HEADS:-1}"
-export TF_FLASHNEXT_SAMPLE_CAND="${TF_FLASHNEXT_SAMPLE_CAND:-1}"
-export TF_FLASHNEXT_GATHER_EARLY="${TF_FLASHNEXT_GATHER_EARLY:-1}"
-export TF_FLASHNEXT_HOST_DRAW_THREADS="${TF_FLASHNEXT_HOST_DRAW_THREADS:-7}"
-# A partly rejected draft window no longer replays the DeltaNet state: the kept rows wait in a log and the next verify pass applies them (patch 0012).
-export TF_FLASHNEXT_KEEP_LATE="${TF_FLASHNEXT_KEEP_LATE:-1}"
-# The n-gram table is read with pread by a thread pool and read ahead (draft tokens' rows during the head step, the next prompt chunk's rows during
-# the current one) instead of through an mmap that page-faults (patch 0013). The last two prompt chunks are evened out when the last would be under 512 rows.
-export TF_FLASHNEXT_GATHER_READ="${TF_FLASHNEXT_GATHER_READ:-pread}"
-export TF_FLASHNEXT_DRAFT_AHEAD="${TF_FLASHNEXT_DRAFT_AHEAD:-1}"
-export TF_FLASHNEXT_WARM_AHEAD="${TF_FLASHNEXT_WARM_AHEAD:-1}"
-export TF_FLASHNEXT_PREFILL_TAIL="${TF_FLASHNEXT_PREFILL_TAIL:-512}"
-# Prompt passes: the hyper-connection normalize, down GEMM, up GEMM and mix run as fused kernels, the shared expert's rows go straight into the y slot,
-# the routed experts use the shared-memory row tiles from 256 rows, and the MTP head takes prompt pieces of 1536 rows (patch 0014; bit-identical to the
-# unfused path: tf-cuda-test hc-fuse, exact.py, pDS-sampled-exact).
-export TF_FLASHNEXT_PROMPT_HC2="${TF_FLASHNEXT_PROMPT_HC2:-1}"
-export TF_FLASHNEXT_PROMPT_SHARED_DIRECT="${TF_FLASHNEXT_PROMPT_SHARED_DIRECT:-1}"
-export TF_FLASHNEXT_PROMPT_EXPERT_TILE_ROWS="${TF_FLASHNEXT_PROMPT_EXPERT_TILE_ROWS:-256}"
-export TF_FLASHNEXT_HEAD_PIECE="${TF_FLASHNEXT_HEAD_PIECE:-1536}"
-# The MX128 prompt tile with two pipeline stages and two blocks an SM (patch 0015): the same arithmetic and bits as the one-stage tile, 15-25% faster per call.
-export TF_FLASHNEXT_PROMPT_GEMM2="${TF_FLASHNEXT_PROMPT_GEMM2:-1}"
-# Decode rounds (patch 0016): the shared expert runs on a second stream beside the routed experts (decode rounds, windows and head passes only), and a shared
-# round takes every lane's DeltaNet rows in three launches a layer instead of five a lane (needs KEEP_LATE=1). Both bit-identical (exact.py, pDS-sampled-exact).
-export TF_FLASHNEXT_SHARED_SIDE="${TF_FLASHNEXT_SHARED_SIDE:-1}"
-export TF_FLASHNEXT_GDN_LANES="${TF_FLASHNEXT_GDN_LANES:-1}"
-# The draft chain stops on the running product of its draft probabilities (keep draft j while p1*...*pj >= 0.4; the db281878 build's rule) up to 5 streams
-# drafting together, the per-draft floor 0.5 above (patch 0017). v1.1.4's default is the per-draft floor 0.6. Only the number of draft rows changes, never a reply:
-# greedy code +4% at 5 streams, +10% at 3, +14% at 1; prose and sampled flat. TF_FLASHNEXT_CONFIDENCE=0.6 restores the stock rule.
-export TF_FLASHNEXT_CONFIDENCE="${TF_FLASHNEXT_CONFIDENCE:--0.4}"
-export TF_FLASHNEXT_PRODUCT_STREAMS="${TF_FLASHNEXT_PRODUCT_STREAMS:-5}"
-# KV cache (--kv-cache). fp8 is the default (patch 0003): about 1.84x the pool of bf16, and lossy (~98.8% top-1 agreement with a
-# bf16 cache, so a free-running reply can differ). bf16 is exact: KV_DTYPE=bf16. FP8 works together with --vision.
-KV_DTYPE="${KV_DTYPE:-fp8}"
+# The prompt path (fused hyper-connections, the NVFP4 prompt expert tile, the 128x256 prompt GEMM, 3072-row chunks) and the n-gram
+# reader (pread with read-ahead, its mode through TF_FLASHNEXT_PLE_IO, read-ahead through TF_FLASHNEXT_WARM_AHEAD) are **in the
+# engine** from TensorFold 1.1.5 and 1.1.7, on by default, with no recipe-side switch. This fork used to export MiaAI-Lab's
+# patch knobs here (PROMPT_HC2, PROMPT_GEMM2, PROMPT_EXPERT_TILE_ROWS, HEAD_PIECE, GATHER_READ, DRAFT_AHEAD, KEEP_LATE, SAMPLED_HEADS,
+# SAMPLE_CAND, GATHER_EARLY, HOST_DRAW_THREADS, SHARED_SIDE, GDN_LANES, PREFILL_TAIL): the pinned engine reads none of them, so they
+# are gone rather than inert. docs/audit-v1.1.7-rebase.md maps each of MiaAI-Lab's seventeen patches to what upstream now does.
+# The draft chain's stop rule is the engine's own in v1.1.7 (a per-draft confidence floor, 0.6 by default). MiaAI-Lab's patch 0017
+# replaces it with the db281878 running-product rule (-0.4, up to 5 drafting streams) for a few percent of greedy code decode; it
+# changes how many draft rows a window asks for and never a reply, and it is not carried here (no port onto 1.1.7 yet).
+export TF_FLASHNEXT_CONFIDENCE="${TF_FLASHNEXT_CONFIDENCE:-0.6}"
+# KV cache (--kv-cache). bf16 is this fork's default because it is the exact one: an fp8 cache reads its codes widened to bf16, so
+# it is the bf16 kernels' arithmetic on rows rounded to e4m3 -- ~1.84x the pool, and lossy (~98.8% top-1 agreement with bf16, so a
+# free-running reply can differ). The streams it buys are priced in PARALLEL above: KV_DTYPE=fp8 is what makes 5 x 262,144 fit, and
+# it works together with --vision. Upstream's other CUDA families take fp8 the same way, off by default.
+KV_DTYPE="${KV_DTYPE:-bf16}"
 MAX_TOKENS="${MAX_TOKENS:-32768}"
 THINKING="${THINKING:-1}"
 DRAFTS="${DRAFTS:-1}"

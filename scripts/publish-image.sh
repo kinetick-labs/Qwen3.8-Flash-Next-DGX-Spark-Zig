@@ -25,7 +25,7 @@ user="${GHCR_USER:-$(gh api user --jq .login 2>/dev/null || echo "${GHCR_IMAGE#g
 log "Labelling $IMAGE as $GHCR_IMAGE:$tag"
 docker build -q -t "$GHCR_IMAGE:$tag" -t "$GHCR_IMAGE:$alias" \
   --label org.opencontainers.image.source="$REPO_URL" \
-  --label org.opencontainers.image.description="Qwen3.8 Flash Next INT4-AutoRound on one DGX Spark: TensorFold's Zig engine (${TF_REF:0:12}) with patches $hash" \
+  --label org.opencontainers.image.description="Qwen3.8 Flash Next (NVIDIA FP4 QAD) on one DGX Spark: TensorFold's Zig engine (${TF_REF:0:12}) with patches $hash" \
   - <<<"FROM $IMAGE" >/dev/null
 log "Pushing $GHCR_IMAGE:$tag and :$alias (~24 GB uncompressed; only changed layers upload)"
 # log in with a throwaway Docker config, so no registry credential stays in ~/.docker after the push

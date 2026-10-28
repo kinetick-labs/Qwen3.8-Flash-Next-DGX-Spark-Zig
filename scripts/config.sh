@@ -50,7 +50,7 @@ unset _pin
 # zero-delta overlay. The other fifteen patches of that series are not carried; docs/audit-v1.1.7-rebase.md says why in
 # one line each (upstream carries the prompt path and the n-gram reader from 1.1.5/1.1.7, and the rest needs a port).
 TF_REPO="${TF_REPO:-https://github.com/kinetick-labs/TensorFold.git}"
-TF_REF="${TF_REF:-1000c39c1f4e7e0c9d1b0b0d1c9b0e0f0d0c0b0a}"   # v1.1.7 + MiaAI-Lab's vision patches 0001, 0002
+TF_REF="${TF_REF:-1000c39c169a3f973464966d9999409b0e3b4b96}"   # v1.1.7 + MiaAI-Lab's vision patches 0001, 0002
 ZIG_VERSION="${ZIG_VERSION:-0.17.0}"
 ZIG_SHA256="${ZIG_SHA256:-9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8}"
 BASE_IMAGE="${BASE_IMAGE:-nvcr.io/nvidia/pytorch:26.07-py3}"
@@ -60,9 +60,9 @@ LIBWEBP_VERSION=1.6.0
 LIBWEBP_SHA256=e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564
 # libtfgrammar.so (structured output, tool_choice "required" and named functions) comes prebuilt from TensorFold's own release archive, checked against its SHA-256;
 # the archive ships it with xgrammar's Apache-2.0 notices. TF_RELEASE is the release that matches TF_REF.
-TF_RELEASE_VERSION=1.1.4
-TF_RELEASE_AARCH64_SHA256=2c77ff0179dbfb9ae1c6ac647f85210194c151243f49eb93f0e34a8d53d7a4ec
-TF_TAG="v1.1.4-${TF_REF:0:7}"
+TF_RELEASE_VERSION=1.1.7
+TF_RELEASE_AARCH64_SHA256=ca84cd741615ab15f3a6f82b02b884bb345db18f0d3ac0ea9471d35a25ce8899
+TF_TAG="v1.1.7-${TF_REF:0:7}"
 IMAGE="${IMAGE:-tensorfold-qwen38:${TF_TAG}}"
 image_hash() {
   ( cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1

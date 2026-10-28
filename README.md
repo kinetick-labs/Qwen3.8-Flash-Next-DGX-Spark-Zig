@@ -21,23 +21,23 @@ with image and video input (`VISION=1`). `VISION=0` serves text only.
 ## This fork (kinetick-labs)
 
 A thin fork of [MiaAI-Lab's recipe](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold)
-at `fd3f43e`, rebased onto **TensorFold v1.1.7** on 2026-10-28. Three things differ from upstream's recipe:
+at `fd3f43e`, rebased onto **TensorFold v1.1.8** on 2026-10-28. Three things differ from upstream's recipe:
 
-- **The base is v1.1.7, not v1.1.4 + their seventeen patches.** 1.1.5 and 1.1.7 ship the prompt path that
+- **The base is upstream v1.1.8, not v1.1.4 + their seventeen patches.** 1.1.5 and 1.1.7 ship the prompt path that
   series was written for (the NVFP4 prompt expert tile, the fused hyper-connections, the 128x256 prompt GEMM)
-  and the n-gram pread reader, with upstream's own exactness gates, so replaying those patches on v1.1.7 would
+  and the n-gram pread reader, with upstream's own exactness gates, so replaying those patches on v1.1.8 would
   re-implement them. Fifteen of the seventeen are therefore **not** carried; the two that are — the NVIDIA FP4
   vision tower's dequant at load and the 16384-token image budget — are lossless and have no upstream
   equivalent.
-- **The pin.** `scripts/config.sh` builds `TF_REPO=kinetick-labs/TensorFold` at `integration/1.1.7-vision`:
-  v1.1.7 (`c5953415e`) plus those two patches as commits. Its tree is byte-identical to a pristine v1.1.7
-  checkout after `git apply` of the two (both trees hash `38165d03c8`), so the pin loses nothing — the point is
+- **The pin.** `scripts/config.sh` builds `TF_REPO=kinetick-labs/TensorFold` at `integration/1.1.8-vision`:
+  v1.1.8 (`03d08f1ef`) plus those two patches as commits. Its tree is byte-identical to a pristine v1.1.8
+  checkout after `git apply` of the two (both trees hash `80004eceb6`), so the pin loses nothing — the point is
   that our engine work has a revision to sit on instead of a patch replay at image build time. `patches/` is
   empty for that reason; `patches/README.md` says so and why.
 - **The quality trade is explicit.** MiaAI-Lab's default KV cache is fp8 — 1.84x the pool, lossy ("about 98.8%
   top-1 agreement with a bf16 cache" in their README) — and it is what makes their 5 x 262,144-token windows
   fit. This fork defaults to **bf16, the exact cache**, with `PARALLEL=3` at the full window, and leaves
-  `KV_DTYPE=fp8` + `PARALLEL=5` as the opt-in trade. `docs/audit-v1.1.7-rebase.md` prices it and lists what is
+  `KV_DTYPE=fp8` + `PARALLEL=5` as the opt-in trade. `docs/audit-upstream-rebase.md` prices it and lists what is
   still unported (the stop rule, keep-late, the sampled-draft machinery).
 
 **The tables below are MiaAI-Lab's measurements**, taken on TensorFold v1.1.4 on NVIDIA's FP4 checkpoint with

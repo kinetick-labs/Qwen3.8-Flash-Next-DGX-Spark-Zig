@@ -76,10 +76,12 @@ defaults, not in the engine.**
   bf16, and lossy (~98.8% top-1 agreement with a bf16 cache, so a free-running reply can differ)" — and
   their published five-stream tables at 262,144 tokens are taken with it, because 5 x 4.4 GiB fits where
   5 x 7.5 GiB does not. Their README's default *is* the lossy configuration.
-- **So this fork defaults to bf16 and pays in streams, not in bits.** `KV_DTYPE=bf16`, `PARALLEL=3` at
-  262,144 tokens (7.5 GiB a window against the ~24.3 GiB pool the engine reports after load); `PARALLEL=5`
-  is available and honest with `KV_DTYPE=fp8`, and `scripts/config.sh` says so in one line rather than
-  burying it. Upstream's other CUDA families take `--kv-cache fp8` the same way: available, off by default.
+- **So this fork defaults to bf16 and pays in streams, not in bits.** `KV_DTYPE=bf16`, `PARALLEL=2` at
+  262,144 tokens: the engine's own admission line on this rig reads "`--parallel 3` needs 23.43 GiB for its
+  streams at a 262144-token window, and the CUDA memory budget leaves 21.55 GiB" — 7.81 GiB a window, so two
+  fit and three are refused before the server listens. `PARALLEL=5` is available and honest with `KV_DTYPE=fp8`
+  (MiaAI-Lab's 4.4 GiB window), and `scripts/config.sh` says so in one line rather than burying it. Upstream's
+  other CUDA families take `--kv-cache fp8` the same way: available, off by default.
 - **The rest of their series does not touch a reply.** The 4-bit MTP head rows (0005) and the running-product
   stop rule (0017) change how many draft rows a window asks for, and drafts are verified against the target,
   so they are an *acceptance* trade, not a quality one; the prompt and gather patches (0006, 0007, 0008,
@@ -98,14 +100,69 @@ defaults, not in the engine.**
 `mem_need_gib 262144` at bf16 with vision is **110 GiB** (`scripts/config.sh`: weights 81 + one window 7.5 +
 8 scratch + 2 vision + 9 reserve + 2), so a start needs a Spark with nothing else large resident — the same
 constraint as before, since the weights decide it. `kv_gib 262144` reads 8 GiB at bf16 against 5 GiB at fp8.
-`PARALLEL=3` is arithmetic on the engine's own reported pool, not a measurement: the admission check refuses
-a `PARALLEL` whose windows do not fit, so a wrong default fails at startup rather than at the first request.
+`PARALLEL=2` is measured, not arithmetic: at 262,144 tokens with the bf16 cache the engine refused
+`--parallel 3` before listening — 23.43 GiB for its streams against a 21.55 GiB CUDA budget, 7.81 GiB a
+window — and served two (`max_batch_size 2`, 78.7 GB active). An earlier draft of this page argued three from
+MiaAI-Lab's 24.3 GiB pool figure; the engine's own number is what counts, and its admission check refuses a
+`PARALLEL` whose windows do not fit, so a wrong default fails at startup rather than at the first request.
 
-## 6. What is still on the table
+## 6. Measured on the pin, 2026-10-28
+
+Built with `zig build -Dnvcc=... -Doptimize=fast fatbins native` (exit 0) and served on one GB10 Spark:
+NVIDIA's FP4 QAD checkpoint, `--context 262144 --parallel 2 --kv-cache bf16 --thinking
+--reasoning-effort xhigh --max-tokens 32768 --temperature 0`, no vision, one client. The engine reported
+`version 1.1.8`, `max_batch_size 2`, 78.7 GB active.
+
+**The defaults in `scripts/config.sh` were wrong and are now measured.** The first start was refused before
+the server listened: "`--parallel 3` needs 23.43 GiB for its streams at a 262144-token window, and the CUDA
+memory budget leaves 21.55 GiB" — 7.81 GiB a window, so two fit. `PARALLEL` is now 2, and §5 says why.
+
+Prefill, fresh prose (the tool counts only the prompt's own tokens, not the 72-token template it caches):
+
+| prompt | prefill s | tok/s |
+| --- | --- | --- |
+| 6,311 | 3.62 | 1,745 |
+| 12,596 | 7.04 | 1,788 |
+| 25,163 | 13.78 | 1,827 |
+| 50,268 | 30.45 | 1,651 |
+| 100,532 | 56.54 | 1,778 |
+
+Decode, 256 tokens, median of 5: greedy code **42.1 tok/s**, sampled chat **48.0 tok/s**.
+
+### The MXFP8 lane, with and without
+
+Same binary (`6e5f454`), same flags, only `TF_FLASHNEXT_MXFP8` differs. The widened arm logs one
+`MXFP8 off, widening {n}x{k} e4m3 to bf16` line per plane (240 of them) and holds 3.0 GB more device memory,
+which is the check that the switch is the only variable.
+
+| | stored codes (default) | widened bf16 (`=0`) |
+| --- | --- | --- |
+| active memory | 78.72 GB | 81.57 GB |
+| prefill tok/s, 6.3k / 12.6k / 25k / 50k / 100k | 1,676 / 1,679 / 1,696 / 1,792 / 1,711 | 1,646 / 1,754 / 1,737 / 1,666 / 1,695 |
+| decode greedy | 42.6 | 41.5 |
+| decode sampled | 47.0 | 42.3 |
+
+So the lane is worth **about 10% of sampled decode and 3.0 GB**, and nothing measurable on prefill: those
+planes are re-read every token and a prompt is a different balance. An earlier pair of runs came out identical
+because the served binary was the pin's, which has no switch at all — the branch has to be built for the arm to
+exist, and the widening lines in its log are what proves it did.
+
+### Against the arm it replaces
+
+The endpoint this work replaces (v1.1.6 fork build, MIA engine, `TF_FLASHNEXT_DEPTH=15
+TF_FLASHNEXT_CONFIDENCE=-0.4 TF_FLASHNEXT_PRODUCT_STREAMS=2`, three streams, vision helper, 81.4 GB active)
+was measured on the same rig harness, 512-token replies, one client: prose 10.68 s, code 9.95 s. The pin on the
+same harness: prose 14.52 s, code 9.41 s — **26% slower on prose, 5% faster on code**. The difference is the
+draft chain's rule, not the engine: 1.1.8 reads `TF_FLASHNEXT_DRAFTS` (default 6) and
+`TF_FLASHNEXT_CONFIDENCE` (default 0.60), where the old arm drafted deeper and never stopped early. Setting them
+on the pin (`TF_FLASHNEXT_DRAFTS=15 TF_FLASHNEXT_CONFIDENCE=-0.4`) is the next run, and it needs the GPU: it is
+the cheapest way to know whether the pin loses anything at all.
+
+## 7. What is still on the table
 
 ### The MXFP8 lane, and its A/B arm
 
-`kinetick-labs/TensorFold` `feat/mxfp8-switch-1.1.8` (`85ce7aa`) adds `TF_FLASHNEXT_MXFP8=0`, which widens the
+`kinetick-labs/TensorFold` `feat/mxfp8-switch-1.1.8` (`6e5f454`) adds `TF_FLASHNEXT_MXFP8=0`, which widens the
 checkpoint's e4m3 planes to bf16 on the host instead of serving them as stored codes. **Upstream 1.1.8 already
 serves them natively** — `cuda_projection.zig:mxfp8` keeps the codes and the group-32 UE8M0 scales, reached from
 `cuda_projection_load.zig` for the attention and DeltaNet stitches a FP4-Local checkpoint carries (and for the
@@ -117,7 +174,7 @@ seven, so widening is exact (the only values that cannot round-trip are f32 subn
 checkpoint's scales, near 127, produce). What differs is bytes: the widened planes are twice the size, which
 the start's memory estimate and the sequence pool both feel.
 
-    TF_REF=85ce7aa23 IMAGE=tensorfold-qwen38:mxfp8-off scripts/prepare.sh
+    TF_REF=6e5f45424 IMAGE=tensorfold-qwen38:mxfp8-off scripts/prepare.sh
     IMAGE=tensorfold-qwen38:mxfp8-off ./start.sh                      # with the lane (upstream's default)
     IMAGE=tensorfold-qwen38:mxfp8-off TF_FLASHNEXT_MXFP8=0 ./start.sh # without it, widened
 
@@ -136,11 +193,14 @@ Wanting their remaining wins means porting, in this order of value per line of r
 4. `0003` + `0005` — fp8 KV. Only worth porting if five full windows are wanted; it is the lossy one, and
    porting it onto the paged caches is the largest job of the four.
 
-## 7. Limits
+## 8. Limits
 
-- No build, serve, bench or quality run was made for this document beyond the `git apply` matrices and the
-  tree-hash identity in §1. `PARALLEL=3`, the 24.3 GiB pool and every throughput figure above are quoted
-  from MiaAI-Lab's README/CHANGELOG or upstream's, or computed from `scripts/config.sh`, not measured here.
+- What §6 reports was measured here: one build, one serve per arm, one client, single runs, +-4% noise on
+  this rig. **No quality run was made** — `tools/exact.py`, `toolcheck.py`, `visioncheck.py`,
+  `prompt_reuse.py` and the 200k needle are all owed on this pin, and vision itself was off in every run
+  above (the two patches this fork keeps are vision patches, so they are unexercised by these numbers).
+- Every other throughput figure in this document is quoted from MiaAI-Lab's README/CHANGELOG or upstream's,
+  at their defaults, and is not comparable with §6's (different harness, checkpoint and stream count).
 - The absorbed/port verdicts are read off the tag's tree (file presence, knob names, changelog claims). A
   file of the same name is not proof of identical arithmetic; that is what the decisions comparison in §4
   is for.

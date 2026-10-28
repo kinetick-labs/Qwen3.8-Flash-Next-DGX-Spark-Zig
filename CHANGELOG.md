@@ -4,7 +4,29 @@ Newest first. This recipe serves one DGX Spark. The image is `tensorfold-qwen38:
 `scripts/prepare.sh` from the revision `scripts/config.sh` pins (`TF_REPO`/`TF_REF`, TensorFold v1.1.8 plus
 two lossless vision patches) with whatever `patches/` holds (nothing, by design).
 
-## 2026-10-28 — rebased onto MiaAI-Lab's recipe and onto TensorFold v1.1.8
+## 2026-10-28 — first run on the pin: `PARALLEL` 2, the MXFP8 lane's two arms
+
+The pin was built and served on the Spark, and two of its documented values were wrong.
+
+- **`PARALLEL=3` is refused; the default is 2.** At 262,144 tokens with the bf16 cache the engine's own
+  admission line reads "`--parallel 3` needs 23.43 GiB for its streams ... the CUDA memory budget leaves
+  21.55 GiB" — 7.81 GiB a window — and it exits before listening. Two streams fit (`max_batch_size 2`,
+  78.7 GB active). `docs/audit-upstream-rebase.md` §5 and `scripts/config.sh` now carry the measured
+  numbers instead of MiaAI-Lab's 24.3 GiB pool arithmetic.
+- **`tools/bench.py` reported a false cache hit and crashed.** This engine counts its ~72-token chat template
+  as `cached`, so "prompts are fresh" cannot mean `cached == 0`; the tool now tolerates up to 256 cached
+  tokens and divides by the prompt's own tokens, which is the rate it claims to report.
+- Measured on one GB10, one client, no vision: prefill 1,745 / 1,788 / 1,827 / 1,651 / 1,778 tok/s at
+  6.3k / 12.6k / 25k / 50k / 100k fresh tokens; decode 42.1 tok/s greedy code, 48.0 sampled chat.
+- **The MXFP8 lane, A/B on one binary (`TF_FLASHNEXT_MXFP8=1` against `=0`):** stored codes are worth about
+  **10% of sampled decode** (47.0 against 42.3 tok/s) and **3.0 GB** (78.72 against 81.57 GB active);
+  prefill and greedy decode stay inside the noise. The branch is `kinetick-labs/TensorFold`
+  `feat/mxfp8-switch-1.1.8`; the pin has no such switch, so the arm only exists on that build.
+- Still owed: every quality check (`exact.py`, `toolcheck.py`, `visioncheck.py`, `prompt_reuse.py`, the 200k
+  needle), vision itself, and the draft-knob run (`TF_FLASHNEXT_DRAFTS=15 TF_FLASHNEXT_CONFIDENCE=-0.4`)
+  that would show whether the 26% prose-decode deficit against the v1.1.6 arm is the draft rule rather than
+  the engine.
+
 
 This fork now tracks MiaAI-Lab's recipe for TensorFold, on **upstream v1.1.8** instead of carrying an EXL3
 recipe of its own. The headline numbers in `README.md` are MiaAI-Lab's (v1.1.4, NVIDIA's FP4 checkpoint,

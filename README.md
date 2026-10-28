@@ -36,7 +36,8 @@ at `fd3f43e`, rebased onto **TensorFold v1.1.8** on 2026-10-28. Three things dif
   empty for that reason; `patches/README.md` says so and why.
 - **The quality trade is explicit.** MiaAI-Lab's default KV cache is fp8 — 1.84x the pool, lossy ("about 98.8%
   top-1 agreement with a bf16 cache" in their README) — and it is what makes their 5 x 262,144-token windows
-  fit. This fork defaults to **bf16, the exact cache**, with `PARALLEL=3` at the full window, and leaves
+  fit. This fork defaults to **bf16, the exact cache**, with `PARALLEL=2` at the full window (the engine refuses
+  three: 7.81 GiB a stream against a 21.55 GiB budget, its own admission line), and leaves
   `KV_DTYPE=fp8` + `PARALLEL=5` as the opt-in trade. `docs/audit-upstream-rebase.md` prices it and lists what is
   still unported (the stop rule, keep-late, the sampled-draft machinery).
 

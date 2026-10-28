@@ -89,15 +89,15 @@ HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8888}"
 # Native window 262,144; the Flash Next CUDA engine of TensorFold 1.1.8 has no YaRN extension, so this is also the maximum.
 CONTEXT="${CONTEXT:-262144}"
-# Requests decoded together. The engine admits each one inside its own budget (MemAvailable after load, less
-# TENSORFOLD_MEMORY_RESERVE_GIB, and with VISION=1 less another 2 GiB kept for the vision helper) and refuses one
-# that would not fit. The pool is shared: streams grow on demand, so PARALLEL is a cap, not a promise that every
-# stream can sit at a full 262,144-token window at once. On a 121 GiB Spark (NVIDIA FP4, vision on) the engine reports
-# about a 24.3 GiB sequence pool after load; a full 262,144-token window is 7.5 GiB with a bf16 cache (the default here)
-# and 4.4 GiB with fp8, so 3 streams fit at the full window with bf16 and 5 need KV_DTYPE=fp8 -- which is the lossy
-# cache this fork does not default to. 3 is the default for that reason; raise PARALLEL with KV_DTYPE=fp8, and read
-# the engine's own startup line ("up to N streams, each growing to C ... R GiB free") rather than trusting this sum.
-PARALLEL="${PARALLEL:-3}"
+# Requests decoded together. The engine admits each one inside its own CUDA budget and refuses the start that would
+# not fit. The pool is shared: streams grow on demand, so PARALLEL is a cap, not a promise that every stream can sit
+# at a full 262,144-token window at once. Measured, 121 GiB Spark, NVIDIA FP4, bf16 cache, 262144: v1.1.8's own
+# admission line reads "--parallel 3 needs 23.43 GiB for its streams at a 262144-token window, and the CUDA memory
+# budget leaves 21.55 GiB" -- 7.81 GiB a stream, so 2 fit and 3 are refused before the server listens. fp8 roughly
+# halves that window and is what MiaAI-Lab's five streams are made of, at the cost of the exact cache this fork
+# defaults to. 2 is the default for that reason; raise PARALLEL with KV_DTYPE=fp8, and read the engine's startup
+# line rather than trusting this sum.
+PARALLEL="${PARALLEL:-2}"
 # MTP: up to this many drafts a round (the engine's default is 6; drafts are checked, so replies match serial decoding).
 export TF_FLASHNEXT_DRAFTS="${TF_FLASHNEXT_DRAFTS:-6}"
 # The prompt path (fused hyper-connections, the NVFP4 prompt expert tile, the 128x256 prompt GEMM, 3072-row chunks) and the n-gram

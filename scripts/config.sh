@@ -43,14 +43,15 @@ unset _pin
 # (git apply in the checkout's root), with Zig ZIG_VERSION. Only the Zig build goes into the image, plus the two
 # image decoders the engine wants (libjpeg-turbo for JPEG, libwebp's decoder for WebP), built from pinned sources.
 #
-# This fork pins kinetick-labs/TensorFold's integration/1.1.7-vision: TensorFold v1.1.7 (c5953415e) plus the two lossless
+# This fork pins kinetick-labs/TensorFold's integration/1.1.8-vision: TensorFold v1.1.8 (03d08f1ef) plus the two lossless
 # vision patches from MiaAI-Lab's recipe (the NVIDIA FP4 checkpoint's quantized tower decoded to bf16 at load, and the
-# per-request image-token budget at 16384). Its tree is byte-identical to a v1.1.7 checkout after `git apply` of those two
-# (both hash 38165d03c8), so patches/ here is deliberately empty - the pin carries them, and replaying them would be a
-# zero-delta overlay. The other fifteen patches of that series are not carried; docs/audit-v1.1.7-rebase.md says why in
+# per-request image-token cap at 16384). Its tree is byte-identical to a v1.1.8 checkout after `git apply` of those two
+# (both hash 80004eceb6), so patches/ here is deliberately empty - the pin carries them, and replaying them would be a
+# zero-delta overlay. The other fifteen patches of that series are not carried; docs/audit-upstream-rebase.md says why in
 # one line each (upstream carries the prompt path and the n-gram reader from 1.1.5/1.1.7, and the rest needs a port).
+# v1.1.8 also loads the NVFP4 experts on several threads (#1368): about 83 s to serve instead of about 200 s.
 TF_REPO="${TF_REPO:-https://github.com/kinetick-labs/TensorFold.git}"
-TF_REF="${TF_REF:-1000c39c169a3f973464966d9999409b0e3b4b96}"   # v1.1.7 + MiaAI-Lab's vision patches 0001, 0002
+TF_REF="${TF_REF:-ba0f4941a35719a2824150dc31d35a2e3f673058}"   # v1.1.8 + MiaAI-Lab's vision patches 0001, 0002
 ZIG_VERSION="${ZIG_VERSION:-0.17.0}"
 ZIG_SHA256="${ZIG_SHA256:-9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8}"
 BASE_IMAGE="${BASE_IMAGE:-nvcr.io/nvidia/pytorch:26.07-py3}"
@@ -60,9 +61,9 @@ LIBWEBP_VERSION=1.6.0
 LIBWEBP_SHA256=e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564
 # libtfgrammar.so (structured output, tool_choice "required" and named functions) comes prebuilt from TensorFold's own release archive, checked against its SHA-256;
 # the archive ships it with xgrammar's Apache-2.0 notices. TF_RELEASE is the release that matches TF_REF.
-TF_RELEASE_VERSION=1.1.7
-TF_RELEASE_AARCH64_SHA256=ca84cd741615ab15f3a6f82b02b884bb345db18f0d3ac0ea9471d35a25ce8899
-TF_TAG="v1.1.7-${TF_REF:0:7}"
+TF_RELEASE_VERSION=1.1.8
+TF_RELEASE_AARCH64_SHA256=1afb157524d63a10e3dd144ec95714dcb0ed7a1e943dae247232bdf79231aad6
+TF_TAG="v1.1.8-${TF_REF:0:7}"
 IMAGE="${IMAGE:-tensorfold-qwen38:${TF_TAG}}"
 image_hash() {
   ( cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
@@ -86,7 +87,7 @@ CONTAINER_NAME="${CONTAINER_NAME:-qwen38-flash-next-tf}"
 SERVED_NAME="${SERVED_NAME:-Qwen3.8-Flash-Next}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8888}"
-# Native window 262,144; the Flash Next CUDA engine of TensorFold 1.1.7 has no YaRN extension, so this is also the maximum.
+# Native window 262,144; the Flash Next CUDA engine of TensorFold 1.1.8 has no YaRN extension, so this is also the maximum.
 CONTEXT="${CONTEXT:-262144}"
 # Requests decoded together. The engine admits each one inside its own budget (MemAvailable after load, less
 # TENSORFOLD_MEMORY_RESERVE_GIB, and with VISION=1 less another 2 GiB kept for the vision helper) and refuses one
@@ -104,10 +105,10 @@ export TF_FLASHNEXT_DRAFTS="${TF_FLASHNEXT_DRAFTS:-6}"
 # engine** from TensorFold 1.1.5 and 1.1.7, on by default, with no recipe-side switch. This fork used to export MiaAI-Lab's
 # patch knobs here (PROMPT_HC2, PROMPT_GEMM2, PROMPT_EXPERT_TILE_ROWS, HEAD_PIECE, GATHER_READ, DRAFT_AHEAD, KEEP_LATE, SAMPLED_HEADS,
 # SAMPLE_CAND, GATHER_EARLY, HOST_DRAW_THREADS, SHARED_SIDE, GDN_LANES, PREFILL_TAIL): the pinned engine reads none of them, so they
-# are gone rather than inert. docs/audit-v1.1.7-rebase.md maps each of MiaAI-Lab's seventeen patches to what upstream now does.
-# The draft chain's stop rule is the engine's own in v1.1.7 (a per-draft confidence floor, 0.6 by default). MiaAI-Lab's patch 0017
+# are gone rather than inert. docs/audit-upstream-rebase.md maps each of MiaAI-Lab's seventeen patches to what upstream now does.
+# The draft chain's stop rule is the engine's own in v1.1.8 (a per-draft confidence floor, 0.6 by default). MiaAI-Lab's patch 0017
 # replaces it with the db281878 running-product rule (-0.4, up to 5 drafting streams) for a few percent of greedy code decode; it
-# changes how many draft rows a window asks for and never a reply, and it is not carried here (no port onto 1.1.7 yet).
+# changes how many draft rows a window asks for and never a reply, and it is not carried here (no port onto 1.1.8 yet).
 export TF_FLASHNEXT_CONFIDENCE="${TF_FLASHNEXT_CONFIDENCE:-0.6}"
 # KV cache (--kv-cache). bf16 is this fork's default because it is the exact one: an fp8 cache reads its codes widened to bf16, so
 # it is the bf16 kernels' arithmetic on rows rounded to e4m3 -- ~1.84x the pool, and lossy (~98.8% top-1 agreement with bf16, so a

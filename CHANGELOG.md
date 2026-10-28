@@ -1,24 +1,28 @@
 # Changelog
 
 Newest first. This recipe serves one DGX Spark. The image is `tensorfold-qwen38:<tag>-<sha>`, built by
-`scripts/prepare.sh` from the revision `scripts/config.sh` pins (`TF_REPO`/`TF_REF`, TensorFold v1.1.7 plus
+`scripts/prepare.sh` from the revision `scripts/config.sh` pins (`TF_REPO`/`TF_REF`, TensorFold v1.1.8 plus
 two lossless vision patches) with whatever `patches/` holds (nothing, by design).
 
-## 2026-10-28 — rebased onto MiaAI-Lab's recipe and onto TensorFold v1.1.7
+## 2026-10-28 — rebased onto MiaAI-Lab's recipe and onto TensorFold v1.1.8
 
-This fork now tracks MiaAI-Lab's recipe for TensorFold, on **upstream v1.1.7** instead of carrying an EXL3
+This fork now tracks MiaAI-Lab's recipe for TensorFold, on **upstream v1.1.8** instead of carrying an EXL3
 recipe of its own. The headline numbers in `README.md` are MiaAI-Lab's (v1.1.4, NVIDIA's FP4 checkpoint,
 sparkDash, their defaults) and were not re-measured here; the audits that decided the rebase are
-`docs/audit-v1.1.7-rebase.md` (the patch series and the quality trade) and `docs/audit-v1.1.4-rebase.md`
+`docs/audit-upstream-rebase.md` (the patch series and the quality trade) and `docs/audit-v1.1.4-rebase.md`
 (this repository's own additions, fix by fix).
 
-- **Engine pin.** `TF_REPO`/`TF_REF` point at `kinetick-labs/TensorFold` `integration/1.1.7-vision`, which is
-  v1.1.7 (`c5953415e`) plus two of MiaAI-Lab's patches as commits: the NVIDIA FP4 vision tower's dequant at
-  load, and the per-request image-token budget at 16384. Tree-identical to a pristine v1.1.7 after the two
-  (`38165d03c8` on both sides).
+- **Engine pin.** `TF_REPO`/`TF_REF` point at `kinetick-labs/TensorFold` `integration/1.1.8-vision`, which is
+  v1.1.8 (`03d08f1ef`) plus two of MiaAI-Lab's patches as commits: the NVIDIA FP4 vision tower's dequant at
+  load, and the per-request image-token cap at 16384. Tree-identical to a pristine v1.1.8 after the two
+  (`80004eceb6` on both sides). `TF_RELEASE_VERSION` and `TF_TAG` move with it (1.1.8, archive sha256
+  `1afb1575…` verified against the download), since that archive is where `libtfgrammar.so` comes from.
+- **Faster start than the release before it.** v1.1.8 loads the NVFP4 experts on several threads straight
+  from the checkpoint's mapped planes (#1368): about 83 s to serve instead of about 200 s on a GB10 with
+  `Qwen3.8-Flash-Next-FP4-Local`, same replies. Nothing else in 1.1.8 touches this family's prompt or decode.
 - **Fifteen of their seventeen patches are not carried**, because 1.1.5 and 1.1.7 ship the prompt path and the
   n-gram reader they were written for (their `0004` and `0013` exist upstream under the same filenames, with
-  kernel-contract entries), and the rest needs a port onto 1.1.7. The audit gives one line and the evidence
+  kernel-contract entries), and the rest needs a port onto this engine. The audit gives one line and the evidence
   per patch, and lists the four port candidates by value.
 - **`patches/` is empty**, for the same provenance reason as before (`patches/README.md`).
 - **The recipe-side knobs of the dropped patches are gone, not inert.** The pin reads none of

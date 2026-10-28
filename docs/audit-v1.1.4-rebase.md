@@ -1,4 +1,10 @@
-# The v1.1.4 rebase: what MiaAI-Lab's new recipe brings, and which of our fixes it retires
+# The v1.1.4 pass: what MiaAI-Lab's new recipe brings, and which of our fixes it retires
+
+> **Superseded** by [`audit-v1.1.7-rebase.md`](audit-v1.1.7-rebase.md). This page is the first pass, taken
+> when the base was going to be TensorFold v1.1.4 plus MiaAI-Lab's seventeen patches; the base moved to
+> upstream v1.1.7 because 1.1.5 and 1.1.7 ship the prompt path and the n-gram reader that series was written
+> for. Everything below about **our own** additions (the EXL3 arm's kv8 cubins, vision-helper container,
+> media fix, profiles, prefill rows, product stop, build/bench scripts) still stands and is not restated there.
 
 Audit for rebasing this recipe onto
 [MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold)

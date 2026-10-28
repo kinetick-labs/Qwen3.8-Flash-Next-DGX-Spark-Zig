@@ -103,6 +103,29 @@ a `PARALLEL` whose windows do not fit, so a wrong default fails at startup rathe
 
 ## 6. What is still on the table
 
+### The MXFP8 lane, and its A/B arm
+
+`kinetick-labs/TensorFold` `feat/mxfp8-switch-1.1.8` (`85ce7aa`) adds `TF_FLASHNEXT_MXFP8=0`, which widens the
+checkpoint's e4m3 planes to bf16 on the host instead of serving them as stored codes. **Upstream 1.1.8 already
+serves them natively** — `cuda_projection.zig:mxfp8` keeps the codes and the group-32 UE8M0 scales, reached from
+`cuda_projection_load.zig` for the attention and DeltaNet stitches a FP4-Local checkpoint carries (and for the
+shared expert and the prompt key/value projections) — and it has no switch to turn that off. So the branch is
+not a port of anything: it is the *other* arm, because a bench with and without the lane needs both.
+
+Both arms give the same numbers: an e4m3 code times a power of two keeps its three mantissa bits inside bf16's
+seven, so widening is exact (the only values that cannot round-trip are f32 subnormals below 2^-126, which no
+checkpoint's scales, near 127, produce). What differs is bytes: the widened planes are twice the size, which
+the start's memory estimate and the sequence pool both feel.
+
+    TF_REF=85ce7aa23 IMAGE=tensorfold-qwen38:mxfp8-off scripts/prepare.sh
+    IMAGE=tensorfold-qwen38:mxfp8-off ./start.sh                      # with the lane (upstream's default)
+    IMAGE=tensorfold-qwen38:mxfp8-off TF_FLASHNEXT_MXFP8=0 ./start.sh # without it, widened
+
+`start.sh` forwards every `TF_FLASHNEXT_*` variable into the container already, so no script changes: two
+images is the only way, since the switch lives in the engine.
+
+### MiaAI-Lab's remaining patches
+
 Wanting their remaining wins means porting, in this order of value per line of risk:
 
 1. `0017` the stop rule — draft rows only, a few percent of greedy code decode, no reply change.

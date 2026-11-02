@@ -2,7 +2,7 @@
 
 Serves **Qwen3.8 Flash-Next FP4-Local** (`nvidia/Qwen3.8-Flash-Next-FP4-Local`, rev `b9ce18a6`) on **one NVIDIA GB10**
 with the native Zig engine (`tensorfold-native`, mia engine) of
-[kinetick-labs/TensorFold](https://github.com/kinetick-labs/TensorFold) **`main` @ `80071f40c`**: upstream
+[kinetick-labs/TensorFold](https://github.com/kinetick-labs/TensorFold) **`main` @ `58ece2237`**: upstream
 [ashhart/TensorFold](https://github.com/ashhart/TensorFold) main `45fcab6c2` plus our engine work. `scripts/build.sh` pins it.
 
 This is the configuration running in Kinetick-labs prod (port 8083).
@@ -40,7 +40,7 @@ huggingface-cli download nvidia/Qwen3.8-Flash-Next-FP4-Local --revision b9ce18a6
 TF_DIR=$HOME/TensorFold ROOT=$HOME/tf-prod-df2g LIBS_FROM=/path/to/libs scripts/build.sh
 ```
 
-Builds `main` @ `80071f40c` ReleaseFast (Zig 0.17, CUDA nvcc, sm_121) and installs `bin/tensorfold-native`, `libs/`
+Builds `main` @ `58ece2237` ReleaseFast (Zig 0.17, CUDA nvcc, sm_121) and installs `bin/tensorfold-native`, `libs/`
 and `COMMIT` under `$ROOT`. **Grammar library:** strict tools and `json_schema` need `libtfgrammar.so` (Linux aarch64)
 in `$ROOT/libs`: take it from a TensorFold release (pinned grammar runtime) or build it with
 `zig build grammar -Dxgrammar=DIR`; `libturbojpeg` / `libwebpdecoder` there serve image input.

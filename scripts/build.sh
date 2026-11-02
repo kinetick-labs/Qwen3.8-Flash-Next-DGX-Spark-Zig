@@ -3,7 +3,7 @@
 # and install it with its runtime libraries under a stable root ($ROOT, default ~/tf-prod-df2g).
 set -euo pipefail
 TF_DIR="${TF_DIR:-$HOME/TensorFold}"
-TF_REF="${TF_REF:-80071f40c}"   # kinetick-labs/TensorFold main (upstream ashhart/TensorFold main + our work)
+TF_REF="${TF_REF:-58ece2237}"   # kinetick-labs/TensorFold main (upstream ashhart/TensorFold main + our work)
 ROOT="${ROOT:-$HOME/tf-prod-df2g}"
 LIBS_FROM="${LIBS_FROM:-}"      # a directory with libtfgrammar.so, libturbojpeg.so*, libwebpdecoder.so* (see README)
 ZIG="${ZIG:-$(command -v zig || echo "$HOME/zig-0.17.0/zig")}"

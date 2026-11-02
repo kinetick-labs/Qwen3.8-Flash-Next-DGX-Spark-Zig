@@ -1,62 +1,49 @@
 #!/usr/bin/env bash
-# Serve Qwen3.8 Flash-Next EXL3 4.05bpw with the TensorFold Zig engine on one DGX Spark (GB10).
-# Foreground; Ctrl-C stops it. Settings: .env (see .env.example), overridden by the caller's environment.
+# Kinetick-labs Spark prod: Qwen3.8 Flash Next FP4-Local on TensorFold's mia engine (flashnext), :8083.
+# fp8 KV, 12 GiB prompt cache, 3 lanes x 262,144 tokens, vision helper, DFlash2 drafts,
+# strict tools / structured output (grammar hooks after Jay Leaton's upstream strict-tool work),
+# layer-sliced prefill (TF_FLASHNEXT_FILL, after MiaAI-Lab) with one long prompt at a time (srf),
+# one-layer slices and 1024-row chunks while another stream decodes.
+#
+# Layout (stable, not ad hoc): $ROOT/bin/tensorfold-native (ReleaseFast build of the pushed commit),
+# $ROOT/libs (libtfgrammar.so, libturbojpeg, libwebpdecoder), $ROOT/COMMIT.
+# Usage: serve.sh            start (replaces the container)   | DRY_RUN=1 serve.sh  print the command
 set -euo pipefail
-cd "$(dirname "$0")/.."
-VARS=(PROFILE TF_DIR MODEL TENSORFOLD_CUDA_KERNELS HOST PORT NAME CONTEXT PARALLEL KV_DTYPE EXTRA_ARGS
-      TENSORFOLD_MEMORY_RESERVE_GIB VISION VISION_IMAGE
-      TF_FLASHNEXT_PREFILL_ROWS TF_FLASHNEXT_X3_MOE_WINDOW TF_FLASHNEXT_DEPTH TF_FLASHNEXT_CONFIDENCE
-      TF_FLASHNEXT_PRODUCT_STREAMS TF_FLASHNEXT_TELEMETRY)
-caller=(); for v in "${VARS[@]}"; do [[ -n "${!v:-}" ]] && caller+=("$v=${!v}"); done
-[[ -f .env ]] && { set -a; . ./.env; set +a; }
-for e in ${caller[@]+"${caller[@]}"}; do export "$e"; done
-
-TF_DIR="${TF_DIR:-$HOME/TensorFold}"
-BIN="$TF_DIR/zig-out/native/bin/tensorfold-native"
-MODEL="${MODEL:-$HOME/models/exl3-405}"
-HOST="${HOST:-127.0.0.1}"; PORT="${PORT:-8083}"; NAME="${NAME:-qwen3.8-flash-next}"
-# Profiles (README "Profiles"): single = 1 stream, bf16 KV, draft depth 4 (exact, the published shas);
-# multi = 4 streams at 262k, FP8 KV (needs the kv8 kernels, scripts/add-kv8.sh), draft depth 3.
-# Explicit variables still win over the profile.
-PROFILE="${PROFILE:-single}"
-case "$PROFILE" in
-  single) d_par=1; d_kv=bf16; d_depth=4 ;;
-  multi)  d_par=4; d_kv=fp8;  d_depth=3 ;;
-  *) echo "[serve] PROFILE=$PROFILE: use single or multi" >&2; exit 2 ;;
-esac
-CONTEXT="${CONTEXT:-262144}"; PARALLEL="${PARALLEL:-$d_par}"; KV_DTYPE="${KV_DTYPE:-$d_kv}"
-export TF_FLASHNEXT_DEPTH="${TF_FLASHNEXT_DEPTH:-$d_depth}"
-export TF_FLASHNEXT_PREFILL_ROWS="${TF_FLASHNEXT_PREFILL_ROWS:-4096}"
-for v in TF_FLASHNEXT_CONFIDENCE TF_FLASHNEXT_PRODUCT_STREAMS TF_FLASHNEXT_X3_MOE_WINDOW TF_FLASHNEXT_TELEMETRY TENSORFOLD_MEMORY_RESERVE_GIB; do
-  [[ -n "${!v:-}" ]] && export "$v"
+ROOT=${ROOT:-$HOME/tf-prod-df2g}
+NAME=${CONTAINER_NAME:-qwen38-fp4local}
+PORT=${PORT:-8083}
+IMAGE=${IMAGE:-tensorfold-zig:exl3-572414d}          # runtime only (CUDA libs); the binary comes from $ROOT/bin
+SNAP=/root/.cache/huggingface/hub/models--nvidia--Qwen3.8-Flash-Next-FP4-Local/snapshots/${MODEL_REVISION:-b9ce18a6887e18c089fdea8509a33e63429a3300}
+DFLASH=${DFLASH:-$HOME/models/qwen38-dflash2}
+VISION_W=${VISION_W:-$HOME/models/sxuff-vision-bf16}
+for f in "$ROOT/bin/tensorfold-native" "$ROOT/libs/libtfgrammar.so" "$DFLASH" "$VISION_W/vision_tower_bf16.safetensors"; do
+  [[ -e "$f" ]] || { echo "serve.sh: missing $f" >&2; exit 1; }
 done
-export TENSORFOLD_NO_UPDATE_CHECK=1
-
-[[ -x "$BIN" ]] || { echo "[serve] $BIN missing: run scripts/build.sh" >&2; exit 2; }
-[[ -f "$MODEL/config.json" ]] || { echo "[serve] no checkpoint at $MODEL" >&2; exit 2; }
-: "${TENSORFOLD_CUDA_KERNELS:?set TENSORFOLD_CUDA_KERNELS to the sm121 Triton set (aot.json + cubins/)}"
-grep -q _ple_rows "$TENSORFOLD_CUDA_KERNELS/aot.json" \
-  || { echo "[serve] $TENSORFOLD_CUDA_KERNELS/aot.json has no _ple_rows: this pack cannot load" >&2; exit 2; }
-if [[ "$KV_DTYPE" == fp8 ]] && ! grep -q _attn_prep8 "$TENSORFOLD_CUDA_KERNELS/aot.json"; then
-  echo "[serve] KV_DTYPE=fp8 needs the FP8 KV kernels: scripts/add-kv8.sh $TENSORFOLD_CUDA_KERNELS <new dir>, then point TENSORFOLD_CUDA_KERNELS at it" >&2; exit 2
-fi
-export TENSORFOLD_CUDA_KERNELS
-
-args=(serve "$MODEL" --host "$HOST" --port "$PORT" --name "$NAME"
-      --context "$CONTEXT" --parallel "$PARALLEL" --kv-dtype "$KV_DTYPE")
-# VISION=1: image/video input through the containerized Python helper (scripts/vision-helper.sh, needs docker
-# with the NVIDIA runtime and VISION_IMAGE); the checkpoint's vision-f16 tower is loaded by the helper.
-# Needs 0d1c730+ (256258d9 refused --vision); --vision keeps 4 GiB free, so p4 262k wants RESERVE 11.5.
-if [[ "${VISION:-0}" == 1 ]]; then
-  args+=(--vision)
-  export MODEL PORT VISION_IMAGE="${VISION_IMAGE:-tensorfold-zig:exl3-572414d}"
-  export TENSORFOLD_VISION_PYTHON="$(pwd)/scripts/vision-helper.sh"
-  docker image inspect "$VISION_IMAGE" >/dev/null 2>&1 || { echo "[serve] VISION=1: image $VISION_IMAGE not found (docker pull/load it, or set VISION_IMAGE)" >&2; exit 2; }
-fi
-# shellcheck disable=SC2206
-[[ -n "${EXTRA_ARGS:-}" ]] && args+=($EXTRA_ARGS)
-echo "[serve] $(cd "$TF_DIR" && git log -1 --format='%h %s' 2>/dev/null || echo '?')"
-echo "[serve] http://$HOST:$PORT/v1  model=$NAME  $BIN ${args[*]}"
-echo "[serve] profile=$PROFILE parallel=$PARALLEL context=$CONTEXT kv=$KV_DTYPE vision=${VISION:-0}"
-env | grep -E '^(TF_FLASHNEXT_|TENSORFOLD_MEMORY)' | sort | sed 's/^/[serve] /' || true
-exec "$BIN" "${args[@]}"
+ENV=(
+  TENSORFOLD_NO_UPDATE_CHECK=1 HF_HUB_OFFLINE=1 LD_LIBRARY_PATH=/tfp/libs
+  TENSORFOLD_FLASHNEXT_ENGINE=mia TENSORFOLD_VISION_WEIGHTS=/vis/vision_tower_bf16.safetensors
+  TF_FLASHNEXT_PREFILL_ROWS=4096 TF_FLASHNEXT_DEPTH=15 TF_FLASHNEXT_CONFIDENCE=-0.4 TF_FLASHNEXT_PRODUCT_STREAMS=2
+  # DFlash2: 7 drafts, cut 0.15, wide cut 0.5
+  TF_FLASHNEXT_DFLASH=/dflash TF_FLASHNEXT_DFLASH_DRAFTS=7 TF_FLASHNEXT_DFLASH_CUT=0.15 TF_FLASHNEXT_DFLASH_CUT_WIDE=0.5
+  # prefill beside decoders: sliced (MiaAI-Lab TF_FLASHNEXT_FILL), one long prompt at a time, 1 layer and
+  # 1024-row chunks while another stream decodes (held 3 s after the last decode round, the default)
+  TF_FLASHNEXT_FILL=1 TENSORFOLD_PREFILL_POLICY=srf TF_FLASHNEXT_FILL_LAYERS_BUSY=1 TF_FLASHNEXT_FILL_ROWS_BUSY=1024
+)
+E=(); for e in "${ENV[@]}"; do E+=(-e "$e"); done
+CMD=(docker run -d --name "$NAME" --gpus all --ipc=host --network host
+     --ulimit memlock=-1 --ulimit stack=67108864 "${E[@]}"
+     -v "$ROOT":/tfp:ro -v "$HOME/.cache/huggingface":/root/.cache/huggingface:ro
+     -v "$VISION_W":/vis:ro -v "$DFLASH":/dflash:ro
+     --entrypoint /tfp/bin/tensorfold-native "$IMAGE"
+     serve "$SNAP" --name Qwen3.8-Flash-Next --host 0.0.0.0 --port "$PORT"
+     --context 262144 --parallel 3 --max-tokens 32768 --temperature 1.0 --top-p 0.95 --top-k 20 --thinking
+     --kv-cache fp8 --prompt-cache-gib 12 --vision-helper)
+if [[ "${DRY_RUN:-0}" == 1 ]]; then printf '%q ' "${CMD[@]}"; echo; exit 0; fi
+docker rm -f "$NAME" >/dev/null 2>&1 || true
+"${CMD[@]}" >/dev/null
+for i in $(seq 200); do
+  curl -sf -m3 "http://127.0.0.1:$PORT/health" >/dev/null && { echo "serve.sh: $NAME ready on :$PORT ($(cat "$ROOT/COMMIT" 2>/dev/null))"; exit 0; }
+  [[ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" == true ]] || { docker logs --tail 40 "$NAME" >&2; exit 1; }
+  sleep 3
+done
+echo "serve.sh: not ready after 600 s" >&2; exit 1

@@ -2,8 +2,10 @@
 
 Serves **Qwen3.8 Flash-Next FP4-Local** (`nvidia/Qwen3.8-Flash-Next-FP4-Local`, rev `b9ce18a6`) on **one NVIDIA GB10**
 with the native Zig engine (`tensorfold-native`, mia engine) of
-[kinetick-labs/TensorFold](https://github.com/kinetick-labs/TensorFold) **`main` @ `58ece2237`**: upstream
-[ashhart/TensorFold](https://github.com/ashhart/TensorFold) main `45fcab6c2` plus our engine work. `scripts/build.sh` pins it.
+[kinetick-labs/TensorFold](https://github.com/kinetick-labs/TensorFold) **`main` @ `17334bddd`**: upstream
+[ashhart/TensorFold](https://github.com/ashhart/TensorFold) main `d6c4cce60` (v1.2.8) plus our engine work, including
+the mid-prefill drain fix, `TENSORFOLD_PREFILL_POLICY=srf` accepted again (upstream's serve check had kept only
+`fcfs`), and a DFlash2 frame-attention call fix after upstream changed the shared kernels. `scripts/build.sh` pins it.
 
 This is the configuration running in Kinetick-labs prod (port 8083).
 
@@ -24,8 +26,13 @@ This is the configuration running in Kinetick-labs prod (port 8083).
 Why these prefill knobs: with three agents, a long fresh prompt used to stall the other streams' decode and make
 cache-resumed turns wait behind it. `srf` fills one long prompt at a time (the begun one first, else the fewest rows
 left, counted from the cache match), short or resumed prompts start between its chunks, and while another stream
-decodes the long prompt advances one layer and 1024 rows at a time. Result: decode min 31 tok/s (was ~5), later turns
-under 1.4 s, solo prefill unchanged (bench/results.md).
+decodes the long prompt advances one layer and 1024 rows at a time. Result on the previous pin: decode min 31 tok/s
+(was ~5), later turns under 1.4 s, solo prefill unchanged (bench/results.md).
+
+Measured on this pin (`17334bddd`, Spark GB10, same serve.sh as prod :8083): solo prefill 14k ~2,274 tok/s on the
+pre-cutover gate and ~2,350 tok/s on prod after the cutover (was 2,347 on `58ece2237`); decode fib 113 / chat 47 /
+fr 51 tok/s, with the same greedy decode hashes as `58ece2237` (fib `c93c652df0a0`, chat `49127283b123`, fr
+`4de58665d0fb`). `TENSORFOLD_PREFILL_POLICY=srf` is the prod value and is accepted by this build.
 
 ## 1. Checkpoint and drafter
 
@@ -40,7 +47,7 @@ huggingface-cli download nvidia/Qwen3.8-Flash-Next-FP4-Local --revision b9ce18a6
 TF_DIR=$HOME/TensorFold ROOT=$HOME/tf-prod-df2g LIBS_FROM=/path/to/libs scripts/build.sh
 ```
 
-Builds `main` @ `58ece2237` ReleaseFast (Zig 0.17, CUDA nvcc, sm_121) and installs `bin/tensorfold-native`, `libs/`
+Builds `main` @ `17334bddd` ReleaseFast (Zig 0.17, CUDA nvcc, sm_121) and installs `bin/tensorfold-native`, `libs/`
 and `COMMIT` under `$ROOT`. **Grammar library:** strict tools and `json_schema` need `libtfgrammar.so` (Linux aarch64)
 in `$ROOT/libs`: take it from a TensorFold release (pinned grammar runtime) or build it with
 `zig build grammar -Dxgrammar=DIR`; `libturbojpeg` / `libwebpdecoder` there serve image input.

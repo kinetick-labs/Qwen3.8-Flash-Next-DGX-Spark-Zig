@@ -14,3 +14,22 @@ all of the fork's prefill work (`ma.py`); TC2 = 7 strict-tool / json_schema chec
 DFlash2 single-stream code decode ~100-114 tok/s (MTP alone ~73).
 Exactness: on outputs only (greedy): every multi-agent reply hash and the single-stream hashes match the fp8 base;
 logits were not compared bit for bit (smaller busy chunks move the chunk cut, which may change bits).
+
+
+# Bench — kinetick-labs/TensorFold main 17334bddd (upstream d6c4cce60 / 1.2.8, Spark GB10, this recipe)
+
+Single-stream, temperature 0, same prompts as the deploy gate against `58ece2237`. Decode hashes are identical.
+Prefill 14k is the mean of the last two of three reps (first rep is a warmup).
+
+| pin | prefill 14k | decode fib | decode chat | decode fr | hashes (fib / chat / fr) |
+|---|---|---|---|---|---|
+| 58ece2237 (previous main) | 2,347 tok/s | 112.6 tok/s | 47.4 tok/s | 51.1 tok/s | c93c652df0a0 / 49127283b123 / 4de58665d0fb |
+| **17334bddd (this pin), candidate gate** | **2,274** tok/s (−3.1%) | **113.1** | **47.3** | **50.6** | same |
+| 17334bddd, prod :8083 after cutover | ~2,350 tok/s | 112.2 | 47.3 | 50.7 | same |
+
+Vision, `tool_choice: required` and `json_schema` (TC2 7/7) passed on this pin. A client leaving mid-prefill no longer
+crashes the engine (same drain fix as 58ece2237). `TENSORFOLD_PREFILL_POLICY=srf` is accepted again.
+
+A concurrent 3-agent session on the candidate kept the same reply hashes as 58ece2237 (order differed because the
+requests ran together) and was not used as a speed gate. Historical multi-agent timings for earlier pins remain in the
+table above.

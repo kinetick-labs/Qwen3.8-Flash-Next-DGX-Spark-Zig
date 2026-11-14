@@ -33,3 +33,31 @@ crashes the engine (same drain fix as 58ece2237). `TENSORFOLD_PREFILL_POLICY=srf
 A concurrent 3-agent session on the candidate kept the same reply hashes as 58ece2237 (order differed because the
 requests ran together) and was not used as a speed gate. Historical multi-agent timings for earlier pins remain in the
 table above.
+
+
+# Bench — kinetick-labs/TensorFold main 082aee98a (compute lane + runner, Spark GB10, this recipe)
+
+Deploy gate against the `17334bddd` baseline, single stream, temperature 0 (prefill: mean of the last two of three reps).
+
+| pin | prefill 14k | decode fib | decode chat | decode fr | hashes (fib / chat / fr) |
+|---|---|---|---|---|---|
+| 17334bddd (baseline) | 2,276 tok/s | 112.2 | 47.3 | 50.7 | c93c652df0a0 / 49127283b123 / 4de58665d0fb |
+| **082aee98a, prod :8083** | **2,291** tok/s | **112.7** | **47.3** | **50.9** | same |
+
+Compute lane suite (15 exact math/logic + 4 coding tasks run against asserts; thinking on, no client tools, 2 at a time):
+
+| | pass | tokens a task (reasoning) | wall a task | cut by length |
+|---|---|---|---|---|
+| 17334bddd, no lane | 14/19 | 1,984 (1,929) | 36.7 s | 5 |
+| lane + runner, DFlash2 off | 19/19 | 314 (152) | 7.3 s | 0 |
+| lane + runner + DFlash2 (candidate) | 19/19 | 314 (152) | 6.8 s | 0 |
+| 082aee98a, prod | 19/19 | 314 (152) | 6.3 s | 0 |
+
+Agents with their own tools (Hermes-like, 10 requests / 6 tool loops): the built-in tool is not offered to them, so
+their prompts match the lane-off server's token for token; hermes2 completion 352 tokens and 6.1 s a task (lane-off
+350 / 5.8 s; offering python next to their tools had cost 432 / 7.1 s and 2 failures). Multi-agent session (`ma.py`,
+3 agents x 2 turns): later-turn TTFT avg 16.0 s, decode avg 33.5 / min 26.7 tok/s.
+
+Vision on 082aee98a: text, counting, chart, table, photo and multi-image checks 14/15 (the 15th is an agent with a
+terminal tool that computed the table total through the tool, as asked); a 5184x2920 MPO camera photo is accepted
+(4,117 prompt tokens, 4.4 s) and read correctly; animated PNG and WebP are refused.

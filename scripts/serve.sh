@@ -4,6 +4,9 @@
 # strict tools / structured output (grammar hooks after Jay Leaton's upstream strict-tool work),
 # layer-sliced prefill (TF_FLASHNEXT_FILL, after MiaAI-Lab) with one long prompt at a time (srf),
 # one-layer slices and 1024-row chunks while another stream decodes.
+# Compute lane + in-model runner (Jay Leaton, qwen4-tensorfold-spark, Apache-2.0): thinking chats get a sandboxed
+# built-in python tool and exact in-thinking cells; knobs as his TP1 tool-full profile. Runtime image adds
+# clang-18/lld-18 and runner-assets-20261107 (calc.tfpc, graph-v7-powmod bank) to the prod runtime.
 #
 # Layout (stable, not ad hoc): $ROOT/bin/tensorfold-native (ReleaseFast build of the pushed commit),
 # $ROOT/libs (libtfgrammar.so, libturbojpeg, libwebpdecoder), $ROOT/COMMIT.
@@ -12,10 +15,11 @@ set -euo pipefail
 ROOT=${ROOT:-$HOME/tf-prod-df2g}
 NAME=${CONTAINER_NAME:-qwen38-fp4local}
 PORT=${PORT:-8083}
-IMAGE=${IMAGE:-tensorfold-zig:exl3-572414d}          # runtime only (CUDA libs); the binary comes from $ROOT/bin
+IMAGE=${IMAGE:-tensorfold-zig:exl3-572414d-runner}   # runtime only (CUDA libs + runner layer); the binary comes from $ROOT/bin
 SNAP=/root/.cache/huggingface/hub/models--nvidia--Qwen3.8-Flash-Next-FP4-Local/snapshots/${MODEL_REVISION:-b9ce18a6887e18c089fdea8509a33e63429a3300}
 DFLASH=${DFLASH:-$HOME/models/qwen38-dflash2}
 VISION_W=${VISION_W:-$HOME/models/sxuff-vision-bf16}
+docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "serve.sh: missing image $IMAGE" >&2; exit 1; }
 for f in "$ROOT/bin/tensorfold-native" "$ROOT/libs/libtfgrammar.so" "$DFLASH" "$VISION_W/vision_tower_bf16.safetensors"; do
   [[ -e "$f" ]] || { echo "serve.sh: missing $f" >&2; exit 1; }
 done
@@ -28,6 +32,14 @@ ENV=(
   # prefill beside decoders: sliced (MiaAI-Lab TF_FLASHNEXT_FILL), one long prompt at a time, 1 layer and
   # 1024-row chunks while another stream decodes (held 3 s after the last decode round, the default)
   TF_FLASHNEXT_FILL=1 TENSORFOLD_PREFILL_POLICY=srf TF_FLASHNEXT_FILL_LAYERS_BUSY=1 TF_FLASHNEXT_FILL_ROWS_BUSY=1024
+  # compute lane (sandboxed python, offered to every thinking chat that brings no tools of its own) and the in-model runner (reasoning spans only)
+  TF_COMPUTE_LANE=1 TF_COMPUTE_LANE_DEFAULT=1
+  TF_RUNNER=1 TF_RUNNER_SPANS=reasoning TF_RUNNER_CIRCUIT=/opt/tensorfold/share/runner/calc.tfpc TF_RUNNER_FORMS=fence,repl,inline,trace
+  TF_RUNNER_BACKEND=graph TF_RUNNER_GRAPH_BANK=/opt/tensorfold/share/runner/graph-v7-powmod/bank/bank.json
+  TF_RUNNER_STATED=0 TF_RUNNER_INLINE_CHAIN=0 TF_RUNNER_INLINE_MARK=1 TF_RUNNER_SYNC_GRAPH=0 TF_RUNNER_COMPILE_STEPS=10522
+  TF_RUNNER_CELLS=1 TF_RUNNER_COMMIT=0 TF_RUNNER_MARK_STOP=0 TF_RUNNER_DIGIT_HOLD_MAX=0
+  TF_COMPUTE_LANE_RUNNER=1 TF_COMPUTE_LANE_RUNNER_CIRCUIT=/opt/tensorfold/share/runner/calc.tfpc TF_COMPUTE_LANE_RUNNER_BACKEND=graph
+  TF_COMPUTE_LANE_RUNNER_GRAPH_BANK=/opt/tensorfold/share/runner/graph-v7-powmod/bank/bank.json TF_COMPUTE_LANE_RUNNER_SETTLE_US=3000
 )
 E=(); for e in "${ENV[@]}"; do E+=(-e "$e"); done
 CMD=(docker run -d --name "$NAME" --gpus all --ipc=host --network host

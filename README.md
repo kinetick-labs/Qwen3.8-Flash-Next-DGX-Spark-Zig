@@ -85,7 +85,12 @@ equal to the same request run alone.
 
 ```bash
 huggingface-cli download nvidia/Qwen3.8-Flash-Next-FP4-Local --revision b9ce18a6887e18c089fdea8509a33e63429a3300
-# DFlash2 drafter in ~/models/qwen38-dflash2, bf16 vision tower in ~/models/sxuff-vision-bf16/vision_tower_bf16.safetensors
+# DFlash2 drafter (Inco AI) -> ~/models/qwen38-dflash2
+huggingface-cli download incoai/Qwen3.8-Flash-Next-DFlash2 --revision a22a1744e85c17364dcc54a6a420af7135d4c7f6 \
+  --local-dir ~/models/qwen38-dflash2
+# bf16 vision tower (doth4580's file, pinned by sxuff's recipe; sha256 cdd69998e52e...c7ebfc641e)
+huggingface-cli download doth4580/Qwen3.8-Flash-Next-EXL3-3.05bpw vision_tower_bf16.safetensors \
+  --revision b5a234522364b10cdc4869844597bf77eeb942a7 --local-dir ~/models/sxuff-vision-bf16
 ```
 
 ## 2. Runtime image
@@ -154,16 +159,53 @@ Checks after start: `/health` 200, a text and an image chat, `tool_choice: requi
 
 ## Credits
 
-- **TensorFold**: ashhart and contributors (upstream ashhart/TensorFold, Apache-2.0).
-- **MiaAI-Lab**: the mia engine for Flash Next and the layer-sliced prefill (`TF_FLASHNEXT_FILL`) this recipe tunes
-  (MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold). Their recipe's tuning set is not used here.
-- **Jay Leaton** (jayleaton): the compute lane (built-in sandboxed python tool), the in-model runner and digit stop,
-  their runner assets and knob profile (jayleaton/qwen4-tensorfold-spark, Apache-2.0, see its NOTICE), and the
-  upstream strict-tool / grammar work our grammar hooks follow.
-- `image/python-overlay.patch` keeps the attributions in its files: the vision helper's request limits follow
-  MiaAI-Lab's single-Spark recipe (patches 0008 and 0009), and the FP8 KV rows follow their row format.
-- **Kinetick-labs** (tournierjc): DFlash2 integration, the compute lane's Flash-Next wiring, tool-less default and MPO fix, srf and cache-resume prefill scheduling, adaptive busy chunks,
-  fp8 KV prod config, the runtime image build and this recipe.
+Only what this recipe actually runs is listed; TensorFold's
+[THIRD_PARTY_NOTICES.md](https://github.com/kinetick-labs/TensorFold/blob/main/THIRD_PARTY_NOTICES.md) has the full
+attributions of the engine.
+
+**Models**
+- **Qwen team** ([Qwen](https://huggingface.co/Qwen)): the base model,
+  [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) (Qwen Community License 1.0).
+- **NVIDIA** ([nvidia](https://huggingface.co/nvidia)): the FP4-Local quantization this recipe serves
+  ([nvidia/Qwen3.8-Flash-Next-FP4-Local](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local), Model Optimizer
+  with quantization-aware distillation; NVIDIA Open Model Agreement).
+- **Inco AI** ([incoai](https://huggingface.co/incoai), [blog](https://inco.ai/blog/dflash2/)): the DFlash2 drafter
+  ([incoai/Qwen3.8-Flash-Next-DFlash2](https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2)).
+- **z-lab** (Jian Chen, Yesheng Liang, Zhijian Liu; [z-lab/dflash](https://github.com/z-lab/dflash), MIT): the DFlash
+  block-diffusion drafter architecture TensorFold's native drafter implements.
+- **doth4580** ([HF](https://huggingface.co/doth4580)): the bf16 vision tower file we serve images with
+  (`vision_tower_bf16.safetensors` of
+  [doth4580/Qwen3.8-Flash-Next-EXL3-3.05bpw](https://huggingface.co/doth4580/Qwen3.8-Flash-Next-EXL3-3.05bpw)), found
+  through **sxuff**'s recipe ([sxuff/qwen38-flash-next-dgx-spark](https://github.com/sxuff/qwen38-flash-next-dgx-spark),
+  MIT), whose manifest pins it.
+
+**Engine**
+- **TensorFold**: [ashhart](https://github.com/ashhart) and [contributors](https://github.com/ashhart/TensorFold/graphs/contributors)
+  ([ashhart/TensorFold](https://github.com/ashhart/TensorFold) v1.2.8 `d6c4cce60`, Apache-2.0): the native Zig/CUDA
+  engine, and the Python image path the vision helper runs (Flash Next CUDA image input by
+  [Shantanu Goel](https://github.com/shantanugoel), upstream #146).
+- **MiaAI-Lab** ([GitHub](https://github.com/MiaAI-Lab)): the mia engine for Flash Next and the layer-sliced prefill
+  (`TF_FLASHNEXT_FILL`) this recipe tunes
+  ([MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold));
+  the FP8 KV cache row format (their patch 0038) our `--kv-cache fp8` kernels adapt; the vision helper's request
+  limits (their patches 0008 and 0009), and the Flash Next image integration upstream #146 adapted from their patch
+  0008. Their recipe's tuning set is not used here.
+- **Jay Leaton** ([jayleaton](https://github.com/jayleaton)): the compute lane (built-in sandboxed python tool), the
+  in-model runner and digit stop, their runner assets and knob profile
+  ([jayleaton/qwen4-tensorfold-spark](https://github.com/jayleaton/qwen4-tensorfold-spark), Apache-2.0, see its NOTICE;
+  his 33 commits keep his authorship), and the upstream strict-tool / grammar work our grammar hooks follow.
+- `image/python-overlay.patch` keeps these attributions in its files.
+
+**Runtime image**
+- **NVIDIA**: the [PyTorch 26.07 container](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch) (CUDA 13,
+  PyTorch). **Triton** ([triton-lang](https://github.com/triton-lang/triton), MIT): compiles the sm_121 kernel set the
+  mia engine replays. **Hugging Face transformers** and **PyAV**: the vision helper's processor and video decoder.
+  libjpeg-turbo (`libturbojpeg`) and libwebp (`libwebpdecoder`) decode image input.
+
+**This recipe**
+- **Kinetick-labs** ([tournierjc](https://github.com/tournierjc)): DFlash2 integration, the compute lane's Flash-Next
+  wiring, tool-less default and MPO fix, srf and cache-resume prefill scheduling, adaptive busy chunks, fp8 KV prod
+  config, the runtime image build and this recipe.
 
 Previous recipe (EXL3 4.05 bpw on the Zig engine): commit `434f376` of this repository.
 

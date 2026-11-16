@@ -15,11 +15,11 @@ set -euo pipefail
 ROOT=${ROOT:-$HOME/tf-prod-df2g}
 NAME=${CONTAINER_NAME:-qwen38-fp4local}
 PORT=${PORT:-8083}
-IMAGE=${IMAGE:-tensorfold-zig:exl3-572414d-runner}   # runtime only (CUDA libs + runner layer); the binary comes from $ROOT/bin
+IMAGE=${IMAGE:-tensorfold-zig:runtime-pt2607-runner}   # scripts/build-image.sh + scripts/runner-image/build.sh; the binary comes from $ROOT/bin
 SNAP=/root/.cache/huggingface/hub/models--nvidia--Qwen3.8-Flash-Next-FP4-Local/snapshots/${MODEL_REVISION:-b9ce18a6887e18c089fdea8509a33e63429a3300}
 DFLASH=${DFLASH:-$HOME/models/qwen38-dflash2}
 VISION_W=${VISION_W:-$HOME/models/sxuff-vision-bf16}
-docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "serve.sh: missing image $IMAGE" >&2; exit 1; }
+docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "serve.sh: missing image $IMAGE (scripts/build-image.sh, then scripts/runner-image/build.sh)" >&2; exit 1; }
 for f in "$ROOT/bin/tensorfold-native" "$ROOT/libs/libtfgrammar.so" "$DFLASH" "$VISION_W/vision_tower_bf16.safetensors"; do
   [[ -e "$f" ]] || { echo "serve.sh: missing $f" >&2; exit 1; }
 done

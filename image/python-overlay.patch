@@ -1,0 +1,1348 @@
+diff -ruN a/tensorfold/cli.py b/tensorfold/cli.py
+--- a/tensorfold/cli.py
++++ b/tensorfold/cli.py
+@@ -199,7 +199,10 @@
+     config = read_config(model_dir)
+     text = config.get("text_config") or config
+     limit = text.get("max_position_embeddings") or config.get("max_position_embeddings")
+-    return int(limit) if isinstance(limit, int) and limit > 0 else 0
++    limit = int(limit) if isinstance(limit, int) and limit > 0 else 0
++    from tensorfold.families.qwen4_exp.cuda.yarn import window
++
++    return window(text, limit)                   # Flash Next under YaRN: factor x the native window
+ 
+ 
+ def _drafter(family: Any, choice: str, backend: str = "mlx") -> str:
+diff -ruN a/tensorfold/cli_args.py b/tensorfold/cli_args.py
+--- a/tensorfold/cli_args.py
++++ b/tensorfold/cli_args.py
+@@ -137,9 +137,10 @@
+                       help="with --tp 2: this machine's rank; rank 0 serves HTTP, rank 1 follows it")
+     cuda.add_argument("--master", default="", help="with --tp 2: rank 0's address on the link between the machines")
+     cuda.add_argument("--master-port", type=int, default=29551, help="with --tp 2: rank 0's rendezvous port")
+-    cuda.add_argument("--kv-dtype", choices=("bf16", "int8", "int4"), default="bf16",
+-                      help="KV cache: bf16 (the default), int8, or int4. Quantized keys and values use one "
+-                           "fp16 scale per 32 values (changes the output; Flash Next on CUDA only)")
++    cuda.add_argument("--kv-dtype", choices=("bf16", "int8", "int4", "fp8"), default="bf16",
++                      help="KV cache: bf16 (the default), int8, int4 or fp8. int8/int4 keys and values use one "
++                           "fp16 scale per 32 values; fp8 stores e4m3 codes with a power-of-two scale per head row, "
++                           "about half of bf16's bytes (all change the output; Flash Next on CUDA only)")
+     cuda.add_argument("--prefill-fp8", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS,
+                       help="prompt matmuls take FP8 (e4m3) activations, one scale a row, where the checkpoint has an "
+                            "FP8 prompt kernel (Qwen3.8 27B and Qwen3.6 MLX 4-bit, NVFP4 checkpoints' FP8 and MXFP8 "
+diff -ruN a/tensorfold/cuda/capacity.py b/tensorfold/cuda/capacity.py
+--- a/tensorfold/cuda/capacity.py
++++ b/tensorfold/cuda/capacity.py
+@@ -337,7 +337,9 @@
+                 raise ValueError(f"host staging needs an estimated {host_staging / GIB:.2f} GiB, "
+                                  f"but only {host_free / GIB:.2f} GiB is available after its reserve; "
+                                  "free host memory or use a checkpoint with smaller loading buffers")
+-        plan = make_plan(int(text.get("max_position_embeddings") or 0), requested,
++        from tensorfold.families.qwen4_exp.cuda.yarn import window
++
++        plan = make_plan(window(text, int(text.get("max_position_embeddings") or 0)), requested,
+                          requested is not None if explicit is None else explicit,
+                          available_bytes(torch), weights, geometry, room=page_room(torch))
+     except (OSError, ValueError, KeyError, TypeError, struct.error) as exc:
+diff -ruN a/tensorfold/cuda/server.py b/tensorfold/cuda/server.py
+--- a/tensorfold/cuda/server.py
++++ b/tensorfold/cuda/server.py
+@@ -61,7 +61,10 @@
+     config = json.loads(path.read_text())
+     text = config.get("text_config") or config
+     limit = text.get("max_position_embeddings") or config.get("max_position_embeddings")
+-    return int(limit) if isinstance(limit, int) and limit > 0 else 0
++    limit = int(limit) if isinstance(limit, int) and limit > 0 else 0
++    from tensorfold.families.qwen4_exp.cuda.yarn import window
++
++    return window(text, limit)                   # Flash Next under YaRN: factor x the native window
+ 
+ 
+ class App:
+diff -ruN a/tensorfold/families/qwen4_exp/__init__.py b/tensorfold/families/qwen4_exp/__init__.py
+--- a/tensorfold/families/qwen4_exp/__init__.py
++++ b/tensorfold/families/qwen4_exp/__init__.py
+@@ -163,7 +163,7 @@
+ # the CUDA engine reads MLX affine weights of this (bits, group size), or NVFP4 (ModelOpt) routed experts
+ CUDA_QUANTIZATION = (4, 32)
+ # the KV cache dtypes the CUDA engine can allocate (``--kv-dtype``)
+-CUDA_KV_DTYPES = ("bf16", "int8", "int4")
++CUDA_KV_DTYPES = ("bf16", "int8", "int4", "fp8")
+ CUDA_DECODE_SHARE = True           # --parallel rounds size their prompt pass by --decode-share (0: whole passes)
+ CUDA_PREFILL_FP8 = True            # --prefill-fp8: an NVFP4 checkpoint's MXFP8 linears have an FP8 prompt kernel
+ 
+diff -ruN a/tensorfold/families/qwen4_exp/cuda/engine.py b/tensorfold/families/qwen4_exp/cuda/engine.py
+--- a/tensorfold/families/qwen4_exp/cuda/engine.py
++++ b/tensorfold/families/qwen4_exp/cuda/engine.py
+@@ -259,7 +259,9 @@
+             how = f"{'locked in memory' if locked else 'read'} in {read_s:.1f}s"
+         if reread_s:
+             how += f", read again after warm-up in {reread_s:.1f}s ({pinned / 2**30:.2f} GiB of pages locked)"
+-        kv = "" if self.kv_dtype == "bf16" else f"; {self.kv_dtype} KV cache (fp16 scale per 32 values)"
++        kv = "" if self.kv_dtype == "bf16" else (
++            "; fp8 KV cache (e4m3, a power-of-two scale per head row)" if self.kv_dtype == "fp8"
++            else f"; {self.kv_dtype} KV cache (fp16 scale per 32 values)")
+         print(f"[tensorfold] Flash Next on CUDA: {rule}; {where}{kv}; n-gram tables {how}; {captured} "
+               f"decode graphs captured; idle prompt pieces {self.prefill_rows} rows; "
+               f"prompt kernels warmed in {warm_s:.1f}s", flush=True)
+@@ -267,12 +269,12 @@
+     def _same_settings(self, torch, ids) -> None:
+         """Both ranks must decode with the same rule, context, draft vocabulary and KV cache, or they would fall out of step: refuse to start otherwise."""
+ 
+-        from .kvcache import BITS_OF
++        from .kvcache import DTYPES
+ 
+         total = int(ids.sum()) if ids is not None else -1
+         mine = torch.tensor([self.depth, round(self.confidence * 1e6), self.max_len, self.streams,
+                              int(self.graphs_enabled),
+-                             len(ids) if ids is not None else -1, total, BITS_OF[self.kv_dtype],
++                             len(ids) if ids is not None else -1, total, DTYPES.index(self.kv_dtype),
+                              self.prefill_rows, int(prompt_precision.fp8())], dtype=torch.int64, device="cuda")
+         both = torch.empty((2 * mine.numel(),), dtype=torch.int64, device="cuda")
+         self.comm.all_gather(mine, both)
+diff -ruN a/tensorfold/families/qwen4_exp/cuda/forward.py b/tensorfold/families/qwen4_exp/cuda/forward.py
+--- a/tensorfold/families/qwen4_exp/cuda/forward.py
++++ b/tensorfold/families/qwen4_exp/cuda/forward.py
+@@ -16,7 +16,7 @@
+ 
+ from . import attention as attn_mod
+ from . import gdn as gdn_mod
+-from . import attn_multi, bf16, gdn_io, gdn_multi, glue, nvfp4_moe, qmm
++from . import attn_multi, bf16, gdn_io, gdn_multi, glue, kv8, nvfp4_moe, qmm
+ from . import image_rows
+ from .hc_check import fuser as _hc_fuser
+ from .state import ATT_ROWS, CAND, Buffers, State, _MoECfg
+@@ -227,7 +227,7 @@
+     sections = getattr(c, "mrope_section", (11, 11, 10))
+     step = None if b.prefill else getattr(b, "attn_step", None)     # a concurrent step: every stream at once
+     if step is not None:
+-        o = attn_multi.layer(layer, w, b, step, mtp, scale)
++        o = kv8.multi_layer(layer, w, b, step, mtp, scale)
+         glue.attn_gate(o[:R], b.pa[:R], b.gated[:R], b.xs_gated[:R], q_heads=c.heads, head_dim=c.head_dim)
+         return _out_proj(w, b, b.gated[:R], a.o, b.xs_gated[:R], R)
+     for st, a0, a1 in segs:
+@@ -237,10 +237,10 @@
+         rope = st.image_positions
+         length = 0 if rope is None else rope.shape[0]
+         delta = st.rope_delta_dev if rope is not None or st.rope_delta else None
+-        glue.attn_prep(b.pa[a0:a1], pos, a.q_scale, a.k_scale, a.iq_scale, w.inv_freq, b.q[a0:], cache.k, cache.v,
+-                       b.iq[a0:], ikc, c.eps, q_heads=c.heads, kv_heads=c.kv_heads, head_dim=c.head_dim,
+-                       index_heads=c.index_heads, index_dim=c.index_dim, ks=cache.ks, vs=cache.vs, bits=bits,
+-                       rope=rope, delta=delta, length=length, sections=sections)
++        kv8.attn_prep(b.pa[a0:a1], pos, a.q_scale, a.k_scale, a.iq_scale, w.inv_freq, b.q[a0:], cache.k, cache.v,
++                      b.iq[a0:], ikc, c.eps, q_heads=c.heads, kv_heads=c.kv_heads, head_dim=c.head_dim,
++                      index_heads=c.index_heads, index_dim=c.index_dim, ks=cache.ks, vs=cache.vs, bits=bits,
++                      rope=rope, delta=delta, length=length, sections=sections)
+         if b.prefill:
+             if b.attn.qsa:
+                 attn_mod.qsa_pool(ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0, rope=rope,
+@@ -251,13 +251,13 @@
+                 ends = host_pos + r0 - a0 + n
+                 if b.attn.qsa:
+                     attn_mod.qsa_rows(b.iq[r0:r0 + n], pooled, b.pos_blk, b.attn, n, context=ends)
+-                attn_mod.attention(b.q[r0:r0 + n], cache.k, cache.v, b.pos_blk, b.attn, n, scale,
++                kv8.attention(b.q[r0:r0 + n], cache.k, cache.v, b.pos_blk, b.attn, n, scale,
+                                    out=b.attn_o[r0:r0 + n], context=ends, ks=cache.ks, vs=cache.vs, bits=bits)
+             continue
+         if b.attn.qsa:
+             attn_mod.qsa_select(b.iq[a0:a1], ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0,
+                                 context=keys, rope=rope, delta=delta, length=length, sections=sections)
+-        o = attn_mod.attention(b.q[a0:a1], cache.k, cache.v, pos, b.attn, a1 - a0, scale, context=keys,
++        o = kv8.attention(b.q[a0:a1], cache.k, cache.v, pos, b.attn, a1 - a0, scale, context=keys,
+                                ks=cache.ks, vs=cache.vs, bits=bits)
+         if len(segs) > 1:                       # the scratch output is the next stream's too
+             b.attn_o[a0:a1].copy_(o[:a1 - a0])
+diff -ruN a/tensorfold/families/qwen4_exp/cuda/kv8.py b/tensorfold/families/qwen4_exp/cuda/kv8.py
+--- a/tensorfold/families/qwen4_exp/cuda/kv8.py
++++ b/tensorfold/families/qwen4_exp/cuda/kv8.py
+@@ -0,0 +1,312 @@
++"""--kv-dtype fp8: Flash Next's attention caches as FP8 e4m3 rows, one power-of-two scale a (position, KV head) row.
++
++The format is MiaAI-Lab's FP8 KV cache row format (their patch 0038, a kv8.py for another family) adapted to Flash
++Next's per-head GQA caches. Lossy (replies differ from bf16's), never inexact: a row's bytes are a function of its
++bf16 row alone (one kernel, ``_attn_prep8``, writes prompt chunks' and decode windows' rows), and the reader takes the
++codes to bf16 (exact: every e4m3 value is a bf16 value) and folds each row's scale into its fp32 products (exact for a
++power of two), so a row's attention depends on its query, its keys and the cache only: drafted == serial, concurrent ==
++solo and resumed == fresh hold as with bf16. The values are those of the bf16 kernels on the dequantized rows up to
++fp32 summation order (Triton lays converted tiles out for the tensor cores its own way).
++
++Layout, per position t and KV head h (row i = t * HK + h):
++  keys   uint8 [capacity, HK, D + 16]: D e4m3 codes, then s_k (fp32), s_v (fp32), 8 zero bytes;
++  values uint8 [capacity, HK, D]:      D e4m3 codes (their scale is in the key row's trailer).
++The KV head's ``_attn_prep8`` program writes both rows and both scales of a position, so nothing else writes a trailer.
++A scale is 2^(ceil(log2 amax) - SHIFT): the row's largest value quantizes into (128, 256], under e4m3's 448, so nothing
++saturates; a floating-point format's relative precision does not depend on the scale, so a per-row power of two loses
++nothing to a finer scale but the values it pushes below e4m3's normal range, under 2^-14 of the row's largest.
++
++The indexer's raw keys and pooled block keys stay bf16 (attention._pool, _scores and the prompt scorers unchanged).
++These kernels live apart from attention.py and glue.py so the bf16 kernels' sources, Triton hashes and cubins stay as
++they were."""
++
++from __future__ import annotations
++
++import torch
++import triton
++import triton.language as tl
++
++from . import attention as attn_mod, glue
++from .attention import CHUNK, _merge
++from .image_rows import rope_axis
++
++PAD = 16             # bytes after a key row's codes: s_k, s_v (fp32), 8 zero bytes
++SHIFT = 8            # a row's scale: 2^(ceil(log2 amax) - SHIFT), so its codes stay within +-256
++
++
++def key_bytes(head_dim: int) -> int:
++    return head_dim + PAD
++
++
++def row_bytes(kv_heads: int, head_dim: int) -> int:
++    """Bytes a position of one layer's keys and values take."""
++    return kv_heads * (2 * head_dim + PAD)
++
++
++# -- the format in torch (tests, and the definition the kernels must equal) -------------------------------------------
++def scales(amax: torch.Tensor) -> torch.Tensor:
++    """fp32 amax -> the fp32 power-of-two scale (``scale_of``, bit for bit)."""
++    bits = amax.float().contiguous().view(torch.int32)
++    e = ((bits >> 23) & 0xFF) + ((bits & 0x7FFFFF) != 0).to(torch.int32)
++    return ((e - SHIFT).clamp(1, 254) << 23).view(torch.float32)
++
++
++def _codes(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
++    """fp32 rows (of bf16 values) [..., D] -> e4m3 codes as uint8 [..., D] and fp32 scales [...]."""
++    s = scales(x.abs().amax(dim=-1))
++    inv = ((254 - (s.view(torch.int32) >> 23)) << 23).view(torch.float32)
++    return (x * inv[..., None]).to(torch.float8_e4m3fn).view(torch.uint8), s
++
++
++def quantize(k: torch.Tensor, v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
++    """bf16 keys and values [N, HK, D] -> the cache's key rows [N, HK, D + PAD] and value rows [N, HK, D] (uint8)."""
++    kq, sk = _codes(k.to(torch.bfloat16).float())
++    vq, sv = _codes(v.to(torch.bfloat16).float())
++    n, hk, d = k.shape
++    keys = torch.zeros((n, hk, d + PAD), dtype=torch.uint8, device=k.device)
++    keys[..., :d] = kq
++    keys[..., d:d + 8] = torch.stack((sk, sv), dim=-1).contiguous().view(torch.uint8).reshape(n, hk, 8)
++    return keys, vq.contiguous()
++
++
++def dequantize(keys: torch.Tensor, values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
++    """A cache's key and value rows -> fp32 keys and values [N, HK, D] (exact: e4m3 codes times a power of two)."""
++    d = values.shape[-1]
++    s = keys[..., d:d + 8].contiguous().view(torch.float32)          # [N, HK, 2]
++    k = keys[..., :d].contiguous().view(torch.float8_e4m3fn).float() * s[..., :1]
++    v = values.contiguous().view(torch.float8_e4m3fn).float() * s[..., 1:]
++    return k, v
++
++
++# -- the format in kernels ------------------------------------------------------------------------------------------
++@triton.jit
++def scale_of(amax):
++    """fp32 amax -> 2^(ceil(log2 amax) - SHIFT) and its reciprocal, both exact powers of two (biased exponent held
++    within 1 .. 254: a zero row gets 2^-126 and zeros)."""
++    bits = amax.to(tl.int32, bitcast=True)
++    e = ((bits >> 23) & 0xFF) + ((bits & 0x7FFFFF) != 0).to(tl.int32)
++    e = tl.minimum(tl.maximum(e - 8, 1), 254)
++    return (e << 23).to(tl.float32, bitcast=True), ((254 - e) << 23).to(tl.float32, bitcast=True)
++
++
++@triton.jit
++def store_kv(KC, VC, KS, row, k, v, HD: tl.constexpr):
++    """Key and value row ``row`` (int64: position * HK + head) <- k, v fp32 [HD] (bf16 values): codes and scales."""
++    d = tl.arange(0, HD)
++    sk, ik = scale_of(tl.max(tl.abs(k), 0))
++    sv, iv = scale_of(tl.max(tl.abs(v), 0))
++    tl.store(KC + row * (HD + 16) + d, (k * ik).to(tl.float8e4nv))
++    tl.store(VC + row * HD + d, (v * iv).to(tl.float8e4nv))
++    tl.store(KS + row * ((HD + 16) // 4) + HD // 4, sk)
++    tl.store(KS + row * ((HD + 16) // 4) + HD // 4 + 1, sv)
++
++
++@triton.jit
++def _attn_prep8(P, POS0, QW, KW, IW, INV, Q, KC, VC, KS, IQ, IKC, ROPE, DELTA, length, eps,
++                PW: tl.constexpr, NQ: tl.constexpr, NKV: tl.constexpr, HD: tl.constexpr, NI: tl.constexpr,
++                IHD: tl.constexpr, HALF: tl.constexpr, MODE: tl.constexpr = 0,
++                S1: tl.constexpr = 11, S2: tl.constexpr = 10):
++    """glue._attn_prep with FP8 keys and values: queries, indexer queries and raw indexer keys as it writes them."""
++
++    r = tl.program_id(0)
++    prep_row8(P, tl.load(POS0) + r, r, tl.program_id(1), QW, KW, IW, INV, Q, KC, VC, KS, IQ, IKC, eps, PW, NQ, NKV,
++              HD, NI, IHD, HALF, ROPE, DELTA, length, MODE, S1, S2)
++
++
++@triton.jit
++def prep_row8(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, IQ, IKC, eps, PW: tl.constexpr, NQ: tl.constexpr,
++              NKV: tl.constexpr, HD: tl.constexpr, NI: tl.constexpr, IHD: tl.constexpr, HALF: tl.constexpr,
++              ROPE=None, DELTA=None, length=0, MODE: tl.constexpr = 0, S1: tl.constexpr = 11, S2: tl.constexpr = 10):
++    """glue._prep_row's head ``head`` of row r at position ``pos`` (its arithmetic as written there), the KV head's
++    key (after norm and rope, rounded to bf16) and value (bf16 from the projection) stored by ``store_kv``."""
++
++    d = tl.arange(0, HD)
++    if head < NQ + NKV + NI:
++        width = tl.where(head >= NQ + NKV, IHD, HD)
++        live = d < width
++        if head < NQ:
++            src = r * PW + head * 2 * HD
++        elif head < NQ + NKV:
++            src = r * PW + NQ * 2 * HD + (head - NQ) * HD
++        else:
++            src = r * PW + NQ * 2 * HD + 2 * NKV * HD + (head - NQ - NKV) * IHD
++        x = tl.load(P + src + d, mask=live, other=0.0).to(tl.float32)
++        rinv = 1.0 / tl.sqrt(tl.sum(x * x, axis=0) / width + eps)
++        if head < NQ:
++            w = tl.load(QW + d).to(tl.float32)
++        elif head < NQ + NKV:
++            w = tl.load(KW + d).to(tl.float32)
++        else:
++            w = tl.load(IW + d, mask=live, other=0.0).to(tl.float32)
++        xn = (x * rinv * w).to(tl.bfloat16).to(tl.float32)
++        partner = tl.where(d < HALF, d + HALF, tl.where(d < 2 * HALF, d - HALF, d))
++        xp = tl.load(P + src + partner, mask=live, other=0.0).to(tl.float32)
++        if head < NQ:
++            wp = tl.load(QW + partner).to(tl.float32)
++        elif head < NQ + NKV:
++            wp = tl.load(KW + partner).to(tl.float32)
++        else:
++            wp = tl.load(IW + partner, mask=live, other=0.0).to(tl.float32)
++        xpn = (xp * rinv * wp).to(tl.bfloat16).to(tl.float32)
++        i = tl.where(d < HALF, d, tl.where(d < 2 * HALF, d - HALF, 0))
++        axis = rope_axis(pos, ROPE, DELTA, length, i, MODE, S1, S2)
++        ang = axis.to(tl.float32) * tl.load(INV + i)
++        cos = tl.cos(ang)
++        sin = tl.sin(ang)
++        rot = tl.where(d < HALF, xn * cos - xpn * sin, tl.where(d < 2 * HALF, xpn * sin + xn * cos, xn))
++        out = rot.to(tl.bfloat16)
++        if head < NQ:
++            tl.store(Q + (r * NQ + head) * HD + d, out)
++        elif head < NQ + NKV:
++            v = tl.load(P + r * PW + NQ * 2 * HD + NKV * HD + (head - NQ) * HD + d).to(tl.float32)
++            store_kv(KC, VC, KS, pos.to(tl.int64) * NKV + head - NQ, out.to(tl.float32), v, HD)
++        else:
++            tl.store(IQ + (r * NI + head - NQ - NKV) * IHD + d, out, mask=live)
++    else:
++        live = d < IHD
++        raw = tl.load(P + r * PW + NQ * 2 * HD + 2 * NKV * HD + NI * IHD + d, mask=live, other=0.0)
++        tl.store(IKC + pos.to(tl.int64) * IHD + d, raw, mask=live)
++
++
++@triton.jit
++def _tile8(q, k, v, sk, sv, m, l, o, valid, scale: tl.constexpr):
++    """attention._tile on FP8 rows: k, v the codes as bf16, each key's s_k on its dots and s_v on its probabilities
++    (powers of two: the products are the dequantized rows' exactly)."""
++    scores = tl.dot(q, tl.trans(k)).to(tl.float32) * sk[None, :]
++    scores = scores * scale
++    scores = tl.where(valid[None, :], scores, float("-inf"))
++    tile_m = tl.max(scores, 1)
++    active = tile_m != float("-inf")
++    next_m = tl.where(active, tl.maximum(m, tile_m), m)
++    alpha = tl.where(active, tl.where(m == float("-inf"), 0.0, tl.exp(m - next_m)), 1.0)
++    p = tl.where(valid[None, :] & active[:, None], tl.exp(scores - next_m[:, None]), 0.0)
++    o = o * alpha[:, None] + tl.dot((p * sv[None, :]).to(tl.bfloat16), v)
++    l = l * alpha + tl.sum(p, 1)
++    return next_m, l, o
++
++
++@triton.jit
++def _chunks8(Q, KC, VC, KS, POS0, PO, PM, PL, IDS, NKR, SPR,
++             H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
++             NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr):
++    r = tl.program_id(0)
++    hk = tl.program_id(1)
++    c = tl.program_id(2)
++    n = tl.load(POS0) + r + 1
++    sparse = False
++    if QSA:
++        sparse = tl.load(SPR + r) != 0
++        n = tl.where(sparse, tl.load(NKR + r), n)
++    chunk8(Q, KC, VC, KS, n, sparse, r, hk, c, PO, PM, PL, IDS, H, HK, D, G, CH, NCH, SCALE, IDW, QSA)
++
++
++@triton.jit
++def chunk8(Q, KC, VC, KS, n, sparse, r, hk, c, PO, PM, PL, IDS,
++           H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
++           NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr):
++    """attention._chunk on FP8 rows: row r's keys in chunk c of its ``n`` (a sparse row's through IDS)."""
++
++    start = c * CH
++    if start < n:                       # chunks past a row's keys write nothing: the merge never reads them
++        gg = tl.arange(0, 16)
++        d = tl.arange(0, D)
++        q = tl.load(Q + (r * H + hk * G + gg[:, None]) * D + d[None, :], mask=gg[:, None] < G, other=0.0)
++        m = tl.full((16,), float("-inf"), tl.float32)
++        l = tl.zeros((16,), tl.float32)
++        o = tl.zeros((16, D), tl.float32)
++        tiles = tl.minimum(n - start, CH)
++        for t in range(0, tl.cdiv(tiles, 64)):
++            ki = start + t * 64 + tl.arange(0, 64)
++            valid = ki < n
++            if QSA:
++                if sparse:
++                    ki = tl.load(IDS + r * IDW + ki, mask=valid, other=0)
++            row = ki.to(tl.int64) * HK + hk
++            kk = tl.load(KC + row[:, None] * (D + 16) + d[None, :], mask=valid[:, None], other=0.0).to(tl.bfloat16)
++            vv = tl.load(VC + row[:, None] * D + d[None, :], mask=valid[:, None], other=0.0).to(tl.bfloat16)
++            sk = tl.load(KS + row * ((D + 16) // 4) + D // 4, mask=valid, other=1.0)
++            sv = tl.load(KS + row * ((D + 16) // 4) + D // 4 + 1, mask=valid, other=1.0)
++            m, l, o = _tile8(q, kk, vv, sk, sv, m, l, o, valid, SCALE)
++        base = (r * NCH + c) * H + hk * G + gg
++        tl.store(PO + base[:, None] * D + d[None, :], o, mask=gg[:, None] < G)
++        tl.store(PM + base, m, mask=gg < G)
++        tl.store(PL + base, l, mask=gg < G)
++
++
++# -- wrappers -------------------------------------------------------------------------------------------------------
++def is_fp8(kc: torch.Tensor, vc: torch.Tensor, bits: int = 0) -> bool:
++    """Whether key and value tensors are an FP8 cache's (uint8 key rows D + PAD wide beside D-wide value rows)."""
++    return (bits == 0 and kc.dtype == torch.uint8 and vc.dtype == torch.uint8
++            and kc.shape[-1] == vc.shape[-1] + PAD)
++
++
++def views(kc: torch.Tensor, vc: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
++    """An FP8 cache's (key codes, value codes, key-row fp32 view holding both scales) as the kernels take them."""
++    if not is_fp8(kc, vc) or not kc.is_contiguous() or not vc.is_contiguous():
++        raise ValueError("an FP8 KV cache: contiguous uint8 key rows [N, HK, D + 16] and value rows [N, HK, D]")
++    return kc.view(torch.float8_e4m3fn), vc.view(torch.float8_e4m3fn), kc.view(torch.float32)
++
++
++def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, iq, ikc,
++              eps: float, *, q_heads: int, kv_heads: int, head_dim: int, index_heads: int, index_dim: int,
++              ks: torch.Tensor | None = None, vs: torch.Tensor | None = None, bits: int = 0,
++              rope: torch.Tensor | None = None, delta: torch.Tensor | None = None, length: int = 0,
++              sections: tuple[int, int, int] = (11, 11, 10)) -> None:
++    """glue.attn_prep's call, into an FP8 cache through ``_attn_prep8`` (the same grid, warps and modes), any other
++    cache through glue.attn_prep itself."""
++
++    if not is_fp8(kc, vc, bits):
++        return glue.attn_prep(p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, iq, ikc, eps,
++                              q_heads=q_heads, kv_heads=kv_heads, head_dim=head_dim, index_heads=index_heads,
++                              index_dim=index_dim, ks=ks, vs=vs, bits=bits, rope=rope, delta=delta, length=length,
++                              sections=sections)
++    rows, pw = p.shape
++    kq, vq, sc = views(kc, vc)
++    mode = 2 if rope is not None else 1 if delta is not None else 0
++    _attn_prep8[(rows, q_heads + kv_heads + index_heads + 1)](
++        p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kq, vq, sc, iq, ikc,
++        rope if rope is not None else pos0, delta if delta is not None else pos0, length, eps, PW=pw, NQ=q_heads,
++        NKV=kv_heads, HD=head_dim, NI=index_heads, IHD=index_dim, HALF=inv_freq.numel(), MODE=mode,
++        S1=sections[1], S2=sections[2], num_warps=2)
++
++
++def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.Tensor, scratch, rows: int,
++              scale: float, out: torch.Tensor | None = None, *, context: int | None = None,
++              ks: torch.Tensor | None = None, vs: torch.Tensor | None = None, bits: int = 0) -> torch.Tensor:
++    """attention.attention's call: over an FP8 cache ``_chunks8``, then ``_merge`` as bf16 caches merge (BITS 0, no
++    rotation); any other cache through attention.attention itself."""
++
++    if not is_fp8(kc, vc, bits):
++        return attn_mod.attention(q, kc, vc, pos0, scratch, rows, scale, out, context=context, ks=ks, vs=vs, bits=bits)
++    kq, vq, sc = views(kc, vc)
++    _, h, d = q.shape
++    hk = kq.shape[1]
++    g = h // hk
++    if g > 16:
++        raise ValueError(f"this attention kernel tiles 16 query heads per KV head (G={g} does not fit)")
++    nch = scratch.nch
++    keys = nch * CHUNK if context is None else context
++    if scratch.qsa:
++        keys = min(keys, (scratch.budget // scratch.ratio + 1) * scratch.ratio - 1)
++    chunks = min(nch, triton.cdiv(keys, CHUNK))
++    out = scratch.out if out is None else out
++    _chunks8[(rows, hk, chunks)](q, kq, vq, sc, pos0, scratch.po, scratch.pm, scratch.pl, scratch.ids, scratch.nk,
++                                 scratch.sparse, H=h, HK=hk, D=d, G=g, CH=CHUNK, NCH=nch, SCALE=scale,
++                                 IDW=scratch.idw, QSA=scratch.qsa, num_warps=4, num_stages=1)
++    _merge[(rows, hk)](scratch.po, scratch.pm, scratch.pl, pos0, out, scratch.nk, scratch.sparse, H=h,
++                       HK=hk, D=d, G=g, CH=CHUNK, NCH=nch, QSA=scratch.qsa, BITS=0, num_warps=4)
++    return out
++
++
++def multi_layer(layer, w, b, step, mtp: bool, scale: float) -> torch.Tensor:
++    """attn_multi.layer's call: a concurrent step over FP8 caches through kv8_multi's kernels, any other through
++    attn_multi.layer itself."""
++
++    from . import attn_multi
++
++    st0 = step.segs[0][0]
++    if not (st0.mtp_kc if mtp else st0.kc[0]).fp8:
++        return attn_multi.layer(layer, w, b, step, mtp, scale)
++    from . import kv8_multi
++
++    return kv8_multi.layer(layer, w, b, step, mtp, scale)
+diff -ruN a/tensorfold/families/qwen4_exp/cuda/kv8_multi.py b/tensorfold/families/qwen4_exp/cuda/kv8_multi.py
+--- a/tensorfold/families/qwen4_exp/cuda/kv8_multi.py
++++ b/tensorfold/families/qwen4_exp/cuda/kv8_multi.py
+@@ -0,0 +1,84 @@
++"""--kv-dtype fp8 in a concurrent step: attn_multi.layer with kv8.py's FP8 rows (Python's multi-stream path).
++
++attn_multi.py's own kernels stay as they are (the Zig engine replays them for bf16 caches); the two that touch keys and
++values have FP8 twins here, calling kv8's row functions with each row's caches found by table: ``_prep_multi8``
++(kv8.prep_row8) and ``_chunks_multi8`` (kv8.chunk8). The pool and the merge are attn_multi's (bf16 indexer keys; no
++rotation, BITS 0). A stream's rows get the bits a one-stream step gives them, so concurrent == solo holds."""
++
++from __future__ import annotations
++
++import torch
++import triton
++import triton.language as tl
++
++from . import attention as attn_mod, kv8
++from .attention import CHUNK
++from .attn_multi import Step, _caches, _merge_multi, _pool_multi, _ptr, _rows_from
++
++
++@triton.jit
++def _prep_multi8(P, POSR, SID, CP, VP, QW, KW, IW, INV, Q, IQ, eps, N, PW: tl.constexpr, NQ: tl.constexpr,
++                 NKV: tl.constexpr, HD: tl.constexpr, NI: tl.constexpr, IHD: tl.constexpr, HALF: tl.constexpr,
++                 VISION: tl.constexpr, S1: tl.constexpr = 11, S2: tl.constexpr = 10):
++    r = tl.program_id(0)
++    s = tl.load(SID + r)
++    rope, delta, length = CP, CP, 0
++    if VISION:
++        rope, delta = _ptr(VP, s, tl.int32), _ptr(VP + N, s, tl.int32)
++        length = tl.load(VP + 2 * N + s).to(tl.int32)
++    kv8.prep_row8(P, tl.load(POSR + r), r, tl.program_id(1), QW, KW, IW, INV, Q, _ptr(CP, s, tl.float8e4nv),
++                  _ptr(CP + N, s, tl.float8e4nv), _ptr(CP, s, tl.float32), IQ, _ptr(CP + 4 * N, s, tl.bfloat16), eps,
++                  PW, NQ, NKV, HD, NI, IHD, HALF, ROPE=rope, DELTA=delta, length=length, MODE=2 if VISION else 0,
++                  S1=S1, S2=S2)
++
++
++@triton.jit
++def _chunks_multi8(Q, CP, POSR, SID, PO, PM, PL, IDS, NKR, N, H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr,
++                   G: tl.constexpr, CH: tl.constexpr, NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr,
++                   QSA: tl.constexpr, RATIO: tl.constexpr, TOP: tl.constexpr):
++    r = tl.program_id(0)
++    s = tl.load(SID + r)
++    n = tl.load(POSR + r) + 1
++    sparse = False
++    if QSA:                                          # a row is sparse when its select would mark it (end past TOP)
++        sparse = n // RATIO > TOP
++        n = tl.where(sparse, tl.load(NKR + r), n)
++    kv8.chunk8(Q, _ptr(CP, s, tl.float8e4nv), _ptr(CP + N, s, tl.float8e4nv), _ptr(CP, s, tl.float32), n, sparse, r,
++               tl.program_id(1), tl.program_id(2), PO, PM, PL, IDS, H, HK, D, G, CH, NCH, SCALE, IDW, QSA)
++
++
++def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
++    """attn_multi.layer over FP8 caches: prep, pool, sparse streams' own selects, chunks, merge -> b.attn_o[:R]."""
++
++    c, a, sc = w.cfg, layer.attn, b.attn
++    n, rows, cp = step.n, step.rows, step.ptrs[step.index[layer.index]]
++    heads = c.heads + c.kv_heads + c.index_heads + 1
++    sections = w.cfg.mrope_section
++    _prep_multi8[(rows, heads)](b.pa[:rows], step.posr, step.sid, cp, step.vision_ptrs,
++                                a.q_scale, a.k_scale, a.iq_scale, w.inv_freq,
++                                b.q, b.iq, c.eps, n, PW=b.pa.shape[1], NQ=c.heads, NKV=c.kv_heads, HD=c.head_dim,
++                                NI=c.index_heads, IHD=c.index_dim, HALF=w.inv_freq.numel(),
++                                VISION=step.vision, S1=sections[1], S2=sections[2], num_warps=2)
++    top = sc.budget // sc.ratio
++    if sc.qsa:
++        _pool_multi[(n, step.most // sc.ratio + 2)](cp, step.vision_ptrs, step.first, step.counts,
++                                                    a.ik_scale, w.inv_freq, c.eps, n,
++                                                    DI=c.index_dim, HALF=w.inv_freq.numel(), RATIO=sc.ratio,
++                                                    VISION=step.vision, S1=sections[1], S2=sections[2],
++                                                    num_warps=1)
++        for (st, a0, a1), end in zip(step.segs, step.ends):
++            if end // sc.ratio > top:                # this stream has sparse rows: its own select
++                _, _, pooled, pos, _ = _caches(layer, st, mtp)
++                attn_mod.qsa_rows(b.iq[a0:a1], pooled, pos, _rows_from(sc, a0), a1 - a0, context=end)
++    keys = max(step.ends)
++    if sc.qsa:
++        keys = min(keys, (top + 1) * sc.ratio - 1)
++    chunks = min(sc.nch, triton.cdiv(keys, CHUNK))
++    hk = c.kv_heads
++    g = c.heads // hk
++    _chunks_multi8[(rows, hk, chunks)](b.q, cp, step.posr, step.sid, sc.po, sc.pm, sc.pl, sc.ids, sc.nk, n,
++                                       H=c.heads, HK=hk, D=c.head_dim, G=g, CH=CHUNK, NCH=sc.nch, SCALE=scale,
++                                       IDW=sc.idw, QSA=sc.qsa, RATIO=sc.ratio, TOP=top, num_warps=4, num_stages=1)
++    _merge_multi[(rows, hk)](sc.po, sc.pm, sc.pl, step.posr, b.attn_o, sc.nk, H=c.heads, HK=hk, D=c.head_dim, G=g,
++                             CH=CHUNK, NCH=sc.nch, QSA=sc.qsa, BITS=0, RATIO=sc.ratio, TOP=top, num_warps=4)
++    return b.attn_o[:rows]
+diff -ruN a/tensorfold/families/qwen4_exp/cuda/kvcache.py b/tensorfold/families/qwen4_exp/cuda/kvcache.py
+--- a/tensorfold/families/qwen4_exp/cuda/kvcache.py
++++ b/tensorfold/families/qwen4_exp/cuda/kvcache.py
+@@ -1,4 +1,4 @@
+-"""Flash Next's CUDA key/value caches: bf16, or ExLlamaV3's -cq 8 / -cq 4 codes (H32-rotated groups of 32, fp16 absmax scales, midpoint grid) kept rotated."""
++"""Flash Next's CUDA key/value caches: bf16, ExLlamaV3's -cq 8 / -cq 4 codes (H32-rotated groups of 32, fp16 absmax scales, midpoint grid) kept rotated, or FP8 e4m3 rows with a power-of-two scale a head row (kv8.py)."""
+ 
+ from __future__ import annotations
+ 
+@@ -6,10 +6,12 @@
+ 
+ import torch
+ 
++from . import kv8
++
+ GROUP = 32                      # values per scale (ExLlamaV3's cache-quant group)
+ SCALE_DTYPE = torch.float16     # ExLlamaV3 stores the group absmax as a half (__float2half_rn)
+-DTYPES = ("bf16", "int8", "int4")
+-BITS_OF = {"bf16": 16, "int8": 8, "int4": 4}
++DTYPES = ("bf16", "int8", "int4", "fp8")
++BITS_OF = {"bf16": 16, "int8": 8, "int4": 4, "fp8": 8}   # fp8: admission sizes it as int8 (16 bytes a head row more than kv8.row_bytes)
+ R32 = 1.0 / math.sqrt(32)
+ 
+ 
+@@ -26,16 +28,18 @@
+ 
+     if dtype == "bf16":
+         return 2 * kv_heads * head_dim * 2
++    if dtype == "fp8":
++        return kv8.row_bytes(kv_heads, head_dim)
+     return 2 * kv_heads * (head_dim if dtype == "int8" else head_dim // 2) + 2 * kv_heads * (head_dim // GROUP) * 2
+ 
+ 
+ # -- storage -------------------------------------------------------------------------------------------
+ class KVCache:
+-    """One attention layer's keys and values ``[capacity, kv_heads, head_dim]`` (int4: head_dim / 2 bytes); a bf16 cache keeps one-element scales so every kernel takes one argument list."""
++    """One attention layer's keys and values ``[capacity, kv_heads, head_dim]`` (int4: head_dim / 2 bytes; fp8: uint8 key rows of head_dim + 16 bytes holding both scales, value rows of head_dim, kv8.py); bf16 and fp8 caches keep one-element scales so every kernel takes one argument list."""
+ 
+     def __init__(self, capacity: int, kv_heads: int, head_dim: int, device, dtype: str = "bf16") -> None:
+         check(dtype)
+-        if dtype != "bf16" and head_dim % GROUP:
++        if dtype in ("int8", "int4") and head_dim % GROUP:
+             raise ValueError(f"a quantized KV cache needs a head dim that is a multiple of {GROUP}, not {head_dim}")
+         self.dtype = dtype
+         self.bits = BITS_OF[dtype]
+@@ -54,6 +58,12 @@
+             groups = (int(capacity), int(kv_heads), int(head_dim) // GROUP)
+             self.ks = torch.zeros(groups, dtype=SCALE_DTYPE, device=device)
+             self.vs = torch.zeros(groups, dtype=SCALE_DTYPE, device=device)
++        elif dtype == "fp8":
++            self.k = torch.zeros((int(capacity), int(kv_heads), kv8.key_bytes(int(head_dim))), dtype=torch.uint8,
++                                 device=device)
++            self.v = torch.zeros(shape, dtype=torch.uint8, device=device)
++            self.ks = torch.zeros((1,), dtype=SCALE_DTYPE, device=device)
++            self.vs = torch.zeros((1,), dtype=SCALE_DTYPE, device=device)
+         else:
+             self.k = torch.zeros(shape, dtype=torch.bfloat16, device=device)
+             self.v = torch.zeros_like(self.k)
+@@ -62,7 +72,13 @@
+ 
+     @property
+     def quantized(self) -> bool:
+-        return self.dtype != "bf16"
++        """int8 / int4: codes with per-group scale tensors and the H32 rotation (the kernels' BITS path)."""
++        return self.dtype in ("int8", "int4")
++
++    @property
++    def fp8(self) -> bool:
++        """FP8 rows (kv8.py's kernels; scales inside the key rows)."""
++        return self.dtype == "fp8"
+ 
+     @property
+     def nbytes(self) -> int:
+diff -ruN a/tensorfold/families/qwen4_exp/cuda/prompt_mm.py b/tensorfold/families/qwen4_exp/cuda/prompt_mm.py
+--- a/tensorfold/families/qwen4_exp/cuda/prompt_mm.py
++++ b/tensorfold/families/qwen4_exp/cuda/prompt_mm.py
+@@ -0,0 +1,218 @@
++"""Prompt-path matmuls whose K slices are summed inside each program: bf16.matmul's and nvfp4.matmul's bits with no
++fp32 partials and no ``_reduce`` (the Zig CUDA engine's prompt chunks; work/research/R2-prefill.md W-A).
++
++``bf16.matmul`` and ``nvfp4.matmul`` cut K into ``SK`` slices by the weight's shape (``split_k`` / ``split_for``): one
++program a (rows, columns, slice) tile writes its slice's fp32 sums to a partial buffer, then ``_reduce`` adds the
++slices in slice order, one fp32 add a slice. Here one program a (rows, columns) tile runs every slice itself: slice s
++is exactly what ``_b16mm`` (``_fp4mm``) program ``pid_s = s`` computes (the same K blocks in the same order, the same
++loads, dots and scale steps, an accumulator from zero), and the slice totals are added as ``_reduce`` adds them
++(``total = p0``, then ``total = total + p_s``), then stored as ``_reduce`` stores them (fp32, or one bf16 rounding).
++A row's or a column's bits never depend on its tile (each output element is the same MMA instruction sequence), so
++the tiles and warps are free; the slice boundaries are not: ``SK`` stays the shape's own.
++
++Nothing in the Python engine calls these; the Zig engine replays them from the kernel set
++(tools/zig/flashnext_prompt_spec.py adds their specializations to zig/tests/cuda/flashnext/kernels.json).
++"""
++
++from __future__ import annotations
++
++HAS_TRITON = True
++try:
++    import triton
++    import triton.language as tl
++
++    from .nvfp4 import _e2m1_pattern, _e4m3_value
++
++    @triton.jit
++    def _b16mm_ks(X, W, OUT, M, x_stride,
++                  N: tl.constexpr, K: tl.constexpr, SK: tl.constexpr, BM: tl.constexpr,
++                  BLOCK_N: tl.constexpr, BK: tl.constexpr, F32: tl.constexpr, GROUP: tl.constexpr):
++        """``bf16._b16mm`` over all SK slices of one tile, the slices summed in order (``_reduce``'s adds).
++
++        One program a (rows, columns) tile on a 1-D grid in bands of GROUP row tiles (all column tiles of a band
++        before the next band), so a band's rows stay in L2 while its column tiles pass: the order of the tiles, not
++        any tile's arithmetic."""
++
++        tiles_m = tl.cdiv(M, BM)
++        tiles_n: tl.constexpr = (N + BLOCK_N - 1) // BLOCK_N
++        pid = tl.program_id(0)
++        band = pid // (GROUP * tiles_n)
++        first_m = band * GROUP
++        size_m = tl.minimum(tiles_m - first_m, GROUP)
++        pid_m = first_m + (pid % size_m)
++        pid_n = (pid % (GROUP * tiles_n)) // size_m
++        rm = pid_m * BM + tl.arange(0, BM)
++        rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
++        rk = tl.arange(0, BK)
++        m_ok = rm < M
++        n_ok = rn < N
++        KS: tl.constexpr = K // SK
++        NB: tl.constexpr = KS // BK               # whole BK blocks a slice, as _b16mm
++        total = tl.zeros((BM, BLOCK_N), dtype=tl.float32)
++        acc = tl.zeros((BM, BLOCK_N), dtype=tl.float32)
++        # block j = s * NB + i: _b16mm's program pid_s = s, step i (k0 = (pid_s * NB + i) * BK)
++        for j in range(SK * NB):
++            k0 = j * BK
++            x = tl.load(X + rm[:, None] * x_stride + (k0 + rk)[None, :], mask=m_ok[:, None], other=0.0)
++            w = tl.load(W + rn[:, None] * K + (k0 + rk)[None, :], mask=n_ok[:, None], other=0.0)
++            acc = tl.dot(x, tl.trans(w), acc)
++            if (j + 1) % NB == 0:                 # slice s done: _reduce's acc = p0, then acc + p_s
++                if j < NB:
++                    total = acc
++                else:
++                    total = total + acc
++                acc = tl.zeros((BM, BLOCK_N), dtype=tl.float32)
++        out_mask = m_ok[:, None] & n_ok[None, :]
++        tl.store(OUT + rm[:, None] * N + rn[None, :], total if F32 else total.to(tl.bfloat16), mask=out_mask)
++
++    @triton.jit
++    def _fp4mm_ks(X, W, S, S2, OUT, M, x_stride,
++                  N: tl.constexpr, K: tl.constexpr, SK: tl.constexpr, BM: tl.constexpr,
++                  SBN: tl.constexpr, BLOCK_N: tl.constexpr, GPI: tl.constexpr, F32: tl.constexpr,
++                  PACKED: tl.constexpr):
++        """``nvfp4._fp4mm`` over all SK slices of one tile, the slices summed in order (``_reduce``'s adds)."""
++
++        PER: tl.constexpr = (K // 16) // SK             # quantization blocks per slice
++        SUB: tl.constexpr = SBN // BLOCK_N              # programs per stored N tile
++        STEPS: tl.constexpr = PER // GPI                # _fp4mm's outer steps a slice
++        pid_n = tl.program_id(1)
++        rm = tl.program_id(0) * BM + tl.arange(0, BM)
++        rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
++        r16 = tl.arange(0, 16)
++        m_ok = rm < M
++        n_ok = rn < N
++        tile = W + (pid_n // SUB) * ((K // 64) * (32 if PACKED else 64) * SBN)
++        local = (pid_n % SUB) * BLOCK_N + tl.arange(0, BLOCK_N)
++        total = tl.zeros((BM, BLOCK_N), dtype=tl.float32)
++        acc = tl.zeros((BM, BLOCK_N), dtype=tl.float32)
++        s2 = tl.load(S2 + rn, mask=n_ok, other=1.0)
++        # step t = s * STEPS + i: _fp4mm's program pid_s = s, step i (b = pid_s * PER + i * GPI + j)
++        for t in range(SK * STEPS):
++            for j in tl.static_range(GPI):
++                b = t * GPI + j
++                x = tl.load(X + rm[:, None] * x_stride + (b * 16 + r16)[None, :], mask=m_ok[:, None], other=0.0)
++                if PACKED:
++                    w8 = tl.load(tile + b * (8 * SBN) + (r16 // 2)[:, None] * SBN + local[None, :])
++                    code = ((w8 >> ((r16 % 2) * 4)[:, None]) & 0xF).to(tl.int32)
++                    wv = _e2m1_pattern(code).to(tl.bfloat16, bitcast=True)
++                else:
++                    wbits = tl.load(tile + b * (16 * SBN) + r16[:, None] * SBN + local[None, :])
++                    wv = wbits.to(tl.bfloat16, bitcast=True)
++                p = tl.dot(x, wv)
++                if PACKED:
++                    s = _e4m3_value(tl.load(S + b * N + rn, mask=n_ok, other=0).to(tl.int32)) * s2
++                else:
++                    s = tl.load(S + b * N + rn, mask=n_ok, other=0.0)
++                acc += p * s[None, :]
++            if (t + 1) % STEPS == 0:              # slice s done: _reduce's acc = p0, then acc + p_s
++                if t < STEPS:
++                    total = acc
++                else:
++                    total = total + acc
++                acc = tl.zeros((BM, BLOCK_N), dtype=tl.float32)
++        out_mask = m_ok[:, None] & n_ok[None, :]
++        tl.store(OUT + rm[:, None] * N + rn[None, :], total if F32 else total.to(tl.bfloat16), mask=out_mask)
++
++    @triton.jit
++    def _scores_rows(IQ, POOLED, POS0, SC, NB, ROWS, HI: tl.constexpr, DI: tl.constexpr, RATIO: tl.constexpr,
++                     TOP: tl.constexpr, BB: tl.constexpr, RT: tl.constexpr):
++        """``attention._scores`` for RT rows a program: the BB pooled keys of block tile j are loaded once (for
++        the tile's last row, the longest) and each row's scores are ``_scores``' own expression on that same
++        [BB, DI] tile: the per-row blocks past a row's end are loaded here but never stored, as there."""
++
++        r0 = tl.program_id(0) * RT
++        j = tl.program_id(1)
++        pos0 = tl.load(POS0)
++        last = tl.minimum(r0 + RT, ROWS) - 1
++        reach = (pos0 + last + 1) // RATIO
++        if reach > TOP and j * BB < reach:
++            b = j * BB + tl.arange(0, BB)
++            d = tl.arange(0, DI)
++            kv = tl.load(POOLED + b[:, None].to(tl.int64) * DI + d[None, :], mask=(b < reach)[:, None], other=0.0)
++            for i in tl.static_range(RT):
++                r = r0 + i
++                complete = (pos0 + r + 1) // RATIO
++                if r < ROWS and complete > TOP and j * BB < complete:
++                    ok = b < complete
++                    k = tl.where(ok[:, None], kv, 0.0).to(tl.float32)
++                    total = tl.zeros((BB,), dtype=tl.float32)
++                    for h in tl.static_range(HI):
++                        q = tl.load(IQ + (r * HI + h) * DI + d).to(tl.float32)
++                        total = total + tl.maximum(tl.sum(k * q[None, :], axis=1), 0.0)
++                    tl.store(SC + r * NB + b, total / tl.sqrt(DI * 1.0), mask=ok)
++
++    from .glue import _bsig
++
++    @triton.jit
++    def _hc_up_mix(ACT, W, NORMED, MIXED, M, D: tl.constexpr, S: tl.constexpr, K: tl.constexpr,
++                   BM: tl.constexpr, BD: tl.constexpr, BK: tl.constexpr):
++        """The hyper-connection read-out's up projection and mix in one pass (the up rows never stored): each
++        stream's up = bf16(act @ W[s D + d].T) as ``bf16._b16mm`` computes it (one K slice: BK steps in order from
++        a zero accumulator, one bf16 rounding), then ``glue._hc_mix``'s expression in stream order:
++        mixed = bf16((sum_s bf16(bsig(up_s) * normed_s)) / S). The 32-group sums are not made (no reader then)."""
++
++        rm = tl.program_id(0) * BM + tl.arange(0, BM)
++        rd = tl.program_id(1) * BD + tl.arange(0, BD)
++        rk = tl.arange(0, BK)
++        m_ok = rm < M
++        total = tl.zeros((BM, BD), dtype=tl.float32)
++        for s in tl.static_range(S):
++            acc = tl.zeros((BM, BD), dtype=tl.float32)
++            for i in range(K // BK):
++                x = tl.load(ACT + rm[:, None] * K + (i * BK + rk)[None, :], mask=m_ok[:, None], other=0.0)
++                w = tl.load(W + (s * D + rd)[:, None] * K + (i * BK + rk)[None, :])
++                acc = tl.dot(x, tl.trans(w), acc)
++            u = acc.to(tl.bfloat16).to(tl.float32)
++            n = tl.load(NORMED + rm[:, None] * (S * D) + s * D + rd[None, :], mask=m_ok[:, None], other=0.0).to(tl.float32)
++            total += (_bsig(u) * n).to(tl.bfloat16).to(tl.float32)
++        m = (total / S).to(tl.bfloat16)
++        tl.store(MIXED + rm[:, None] * D + rd[None, :], m, mask=m_ok[:, None])
++
++    @triton.jit
++    def _hc_wb_norm(H, HOUT, PSS, BR, INJ, Y, WTS, RS, SCALE, NORMED, eps,
++                    D: tl.constexpr, S: tl.constexpr, MODE: tl.constexpr, TOPK: tl.constexpr, SLOTS: tl.constexpr,
++                    BLOCK: tl.constexpr, WORLD: tl.constexpr):
++        """``glue._hc_writeback`` and ``glue._hc_normed`` for one row a program (the chunk-invariant prompt path).
++        Phase 1 is _hc_writeback's body over the row's D // BLOCK chunks (the same BLOCK and warps: its fp32 squared
++        sums per chunk and stream are the same bits, stored to PSS as there); after a barrier phase 2 is _hc_normed's:
++        rinv_s from the stream's chunk sums in chunk order, normed = bf16(h * rinv_s * scale). The 32-group sums of
++        normed are not made (only the 4-bit MTP draft matrices read them)."""
++
++        r = tl.program_id(0)
++        NC: tl.constexpr = D // BLOCK
++        for c in tl.static_range(NC):
++            d = c * BLOCK + tl.arange(0, BLOCK)
++            if MODE == 1:
++                branch = tl.load(BR + r * D + d).to(tl.float32)
++            elif MODE == 3 or MODE == 4:
++                acc = tl.load(BR + r * D + d)
++                for k in tl.static_range(1, WORLD):
++                    acc = acc + tl.load(BR + k * RS + r * D + d)
++                branch = acc.to(tl.bfloat16).to(tl.float32)
++            elif MODE == 2:
++                acc = tl.zeros((BLOCK,), dtype=tl.float32)
++                for k in tl.static_range(TOPK + 1):
++                    wk = tl.load(WTS + r * SLOTS + k)
++                    yk = tl.load(Y + (r * SLOTS + k) * D + d).to(tl.float32)
++                    acc = acc + yk * wk
++                branch = acc.to(tl.bfloat16).to(tl.float32)
++            for s in tl.static_range(S):
++                hv = tl.load(H + r * (S * D) + s * D + d).to(tl.float32)
++                if MODE != 0:
++                    inj = tl.load(INJ + r * S + s).to(tl.float32)
++                    hv = (hv + (branch * inj).to(tl.bfloat16).to(tl.float32)).to(tl.bfloat16).to(tl.float32)
++                    tl.store(HOUT + r * (S * D) + s * D + d, hv.to(tl.bfloat16))
++                tl.store(PSS + (r * NC + c) * S + s, tl.sum(hv * hv, axis=0))
++        tl.debug_barrier()
++        for s in tl.static_range(S):
++            total = 0.0
++            for c in tl.static_range(NC):
++                total += tl.load(PSS + (r * NC + c) * S + s)
++            rinv = 1.0 / tl.sqrt(total / D + eps)
++            for c in tl.static_range(NC):
++                d = c * BLOCK + tl.arange(0, BLOCK)
++                hv = tl.load(HOUT + r * (S * D) + s * D + d).to(tl.float32)
++                w = tl.load(SCALE + s * D + d).to(tl.float32)
++                tl.store(NORMED + r * (S * D) + s * D + d, (hv * rinv * w).to(tl.bfloat16))
++except ModuleNotFoundError:
++    HAS_TRITON = False
+diff -ruN a/tensorfold/families/qwen4_exp/cuda/weight_types.py b/tensorfold/families/qwen4_exp/cuda/weight_types.py
+--- a/tensorfold/families/qwen4_exp/cuda/weight_types.py
++++ b/tensorfold/families/qwen4_exp/cuda/weight_types.py
+@@ -16,6 +16,7 @@
+ from ..ssd_table import SSDTable
+ from .ngram import NGram
+ from .qmm import Q4
++from .yarn import Yarn, read as read_yarn
+ 
+ 
+ def stop_ids(configured: Any, generation: Path) -> tuple[int, ...]:
+@@ -76,6 +77,7 @@
+     quant: str = "mlx"                 # "mlx" (affine 4-bit everywhere) or "modelopt" (NVFP4 routed experts)
+     mrope_section: tuple[int, int, int] = (11, 11, 10)   # interleaved t/h/w rotary pairs
+     nvfp4_group: int = 16              # the NVFP4 block size (the checkpoint's config_groups weights.group_size)
++    yarn: Yarn | None = None           # YaRN past the native window (yarn.py; None: the default rope)
+ 
+     @classmethod
+     def read(cls, model_dir: str | Path) -> "Config":
+@@ -115,6 +117,7 @@
+             eos=eos, group_size=int(quant.get("group_size", 32)), bits=int(quant.get("bits", 4)),
+             quant=method, nvfp4_group=group,
+             mrope_section=tuple(int(x) for x in rope.get("mrope_section", (11, 11, 10))),
++            yarn=read_yarn(t),
+         )
+ 
+     @property
+diff -ruN a/tensorfold/families/qwen4_exp/cuda/weights.py b/tensorfold/families/qwen4_exp/cuda/weights.py
+--- a/tensorfold/families/qwen4_exp/cuda/weights.py
++++ b/tensorfold/families/qwen4_exp/cuda/weights.py
+@@ -12,6 +12,7 @@
+ from tensorfold.cuda import experts as grouped
+ 
+ from .qmm import Q4, dequantize, make_q4, stack_q4
++from . import yarn
+ from .reader import _DT, _Reader, _groups, _rows, _rows_at, norms_around_one  # noqa: F401
+ from .weight_types import (
+     AttnW, Config, GDNW, HC, LayerW, MoEW, MTPW, PLEW, Weights, draft_token_ids, stop_ids)  # noqa: F401 (re-exported)
+@@ -40,7 +41,8 @@
+ 
+     model_dir = Path(model_dir)
+     if exl3.is_exl3(model_dir):                       # an EXL3 pack: its own loader, the same dataclasses
+-        return exl3.load(model_dir, device, mtp=mtp, tp=tp, draft_vocab=draft_vocab, table_reads=table_reads)
++        return yarn.apply(exl3.load(model_dir, device, mtp=mtp, tp=tp, draft_vocab=draft_vocab,
++                                    table_reads=table_reads))
+     full = Config.read(model_dir)
+     rank, world = tp if tp is not None else (0, 1)
+     cfg = full if world == 1 else replace(full, heads=full.heads // world, kv_heads=full.kv_heads // world,
+@@ -444,4 +446,4 @@
+     rd.release()
+     torch.cuda.empty_cache()
+     w.meta["load_seconds"] = time.time() - t0
+-    return w
++    return yarn.apply(w)
+diff -ruN a/tensorfold/families/qwen4_exp/cuda/yarn.py b/tensorfold/families/qwen4_exp/cuda/yarn.py
+--- a/tensorfold/families/qwen4_exp/cuda/yarn.py
++++ b/tensorfold/families/qwen4_exp/cuda/yarn.py
+@@ -0,0 +1,177 @@
++"""YaRN on Flash Next's 64 rotary dims: Qwen's recipe past the native 262,144 tokens (rope_type yarn, factor 4).
++
++The semantics are Transformers' ``_compute_yarn_parameters``: each rotary pair's frequency blends the native one
++(extrapolation) and the native one over ``factor`` (interpolation) along a linear ramp over the pairs, from the
++correction dim of ``beta_fast`` (32) rotations to that of ``beta_slow`` (1) rotation in
++``original_max_position_embeddings`` positions (floor and ceil with ``truncate``, the default); and the cos/sin of
++the rotary dims are multiplied by the attention factor, 0.1 ln(factor) + 1 unless the config gives one.
++
++Here the frequencies are computed in fp64 and stored fp32, like the default ones (``weights.load``), and the
++attention factor is folded into the fp32 gammas of the four RMSNorms whose outputs are rotated (q_norm, k_norm and
++the indexer's q_layernorm and k_layernorm, in every attention layer and the MTP layer): RoPE is linear, so scaling a
++normalized head's rotary dims before the rotation is scaling cos and sin. The main attention, the QSA indexer (its
++queries and its pooled keys) and the MTP layer share the one rotary embedding, as in Transformers and vLLM.
++
++Off unless the config's ``rope_parameters`` say yarn or ``TF_FLASHNEXT_YARN`` gives a factor (``0``/``off`` turns a
++config's yarn off). The Zig engine computes the same bits (zig/src/families/flashnext/cuda_rope.zig).
++"""
++
++from __future__ import annotations
++
++import math
++import os
++from dataclasses import dataclass
++
++ENV = "TF_FLASHNEXT_YARN"                         # a factor > 1 (4.0: 1,048,576 tokens), or 0 / off
++ENV_RAMP = "TF_FLASHNEXT_YARN_RAMP_POSITIONS"     # the ramp's positions (default original_max_position_embeddings;
++                                                  # vLLM's MRotaryEmbedding passes 4x that)
++TEXT_TYPES = ("qwen4_exp", "qwen4_exp_text")
++OFF = ("0", "off", "no", "false", "none", "default")
++
++
++def _mscale(scale: float, mscale: float = 1.0) -> float:
++    return 1.0 if scale <= 1 else 0.1 * mscale * math.log(scale) + 1.0
++
++
++@dataclass(frozen=True)
++class Yarn:
++    factor: float
++    original: int                    # original_max_position_embeddings: the trained window
++    beta_fast: float = 32.0
++    beta_slow: float = 1.0
++    attention: float = 0.0           # the attention factor (0: derived from factor)
++    truncate: bool = True
++    ramp_positions: int = 0          # the positions the correction dims count rotations in (0: original)
++
++    @property
++    def window(self) -> int:
++        return int(self.factor * self.original)
++
++    @property
++    def scale(self) -> float:
++        """The attention factor multiplying cos and sin of the rotary dims (fp64)."""
++
++        return float(self.attention) if self.attention else _mscale(self.factor)
++
++    def bounds(self, rotary_dim: int, theta: float) -> tuple[float, float]:
++        """The ramp's first and last rotary pair (Transformers' find_correction_range)."""
++
++        positions = self.ramp_positions or self.original
++
++        def dim(rotations: float) -> float:
++            return rotary_dim * math.log(positions / (rotations * 2 * math.pi)) / (2 * math.log(theta))
++
++        low, high = dim(self.beta_fast), dim(self.beta_slow)
++        if self.truncate:
++            low, high = math.floor(low), math.ceil(high)
++        return max(low, 0), min(high, rotary_dim - 1)
++
++
++def read(text: dict) -> Yarn | None:
++    """The YaRN settings of a text config (``rope_parameters``), with ``TF_FLASHNEXT_YARN`` over them."""
++
++    rope = dict(text.get("rope_parameters") or {})
++    native = int(text.get("max_position_embeddings") or 0)
++    env = os.environ.get(ENV, "").strip().lower()
++    if env in OFF:
++        return None
++    if env:
++        try:
++            factor = float(env)
++        except ValueError:
++            raise ValueError(f"{ENV}={env!r}: a YaRN factor above 1 (4.0 for 1,048,576 tokens), or off") from None
++        rope = {**rope, "rope_type": "yarn", "factor": factor}
++    if str(rope.get("rope_type", rope.get("type", "default"))) != "yarn":
++        return None
++    original = int(rope.get("original_max_position_embeddings") or native)
++    factor = rope.get("factor")
++    factor = float(factor) if factor is not None else (native / original if original else 0.0)
++    if not factor > 1.0 or original <= 0:
++        raise ValueError(f"YaRN needs a factor above 1 and original_max_position_embeddings; got factor {factor}, "
++                         f"original {original}")
++    attention = rope.get("attention_factor")
++    mscale, mscale_all = rope.get("mscale"), rope.get("mscale_all_dim")
++    if attention is None and mscale and mscale_all:
++        attention = _mscale(factor, float(mscale)) / _mscale(factor, float(mscale_all))
++    ramp = os.environ.get(ENV_RAMP, "").strip()
++    return Yarn(factor=factor, original=original, beta_fast=float(rope.get("beta_fast") or 32),
++                beta_slow=float(rope.get("beta_slow") or 1), attention=float(attention or 0.0),
++                truncate=bool(rope.get("truncate", True)), ramp_positions=int(ramp) if ramp else 0)
++
++
++def window(text: dict, limit: int) -> int:
++    """A Flash Next config's window: ``factor * original`` under YaRN, else ``limit`` (max_position_embeddings)."""
++
++    if str(text.get("model_type", "")) not in TEXT_TYPES:
++        return limit
++    yarn = read(text)
++    return max(int(limit or 0), yarn.window) if yarn is not None else limit
++
++
++def inv_freq(theta: float, rotary_dim: int, yarn: Yarn | None):
++    """The fp32 frequencies of the rotary pairs, computed in fp64 (the default ones are weights.load's bits)."""
++
++    import torch
++
++    half = rotary_dim // 2
++    native = torch.tensor(theta, dtype=torch.float64) ** (-torch.arange(0, half, dtype=torch.float64) / half)
++    if yarn is None:
++        return native.to(torch.float32)
++    low, high = yarn.bounds(rotary_dim, theta)
++    if low == high:
++        high += 0.001
++    ramp = ((torch.arange(half, dtype=torch.float64) - low) / (high - low)).clamp(0, 1)
++    keep = 1 - ramp                                   # 1: the native frequency, 0: the native one over factor
++    return ((native / yarn.factor) * (1 - keep) + native * keep).to(torch.float32)
++
++
++def scale32(yarn: Yarn | None) -> float:
++    """The attention factor rounded to fp32, as it multiplies the fp32 gammas."""
++
++    import numpy as np
++
++    return 1.0 if yarn is None else float(np.float32(yarn.scale))
++
++
++def fold(gamma, rotary_dim: int, scale: float) -> None:
++    """gamma[:rotary_dim] = fp32(gamma * scale) in place: one IEEE fp32 multiply (the fp64 product is exact)."""
++
++    import torch
++
++    head = gamma[:rotary_dim]
++    head.copy_((head.to(torch.float64) * float(scale)).to(torch.float32))
++
++
++def apply(w):
++    """YaRN on loaded weights: the frequencies and the attention factor folded into the rotated norms' gammas."""
++
++    cfg = w.cfg
++    yarn = getattr(cfg, "yarn", None)
++    if yarn is None:
++        return w
++    import torch
++
++    if w.inv_freq.dtype != torch.float32 or w.inv_freq.numel() != cfg.rotary_dim // 2:
++        raise ValueError("YaRN expects the fp32 rotary frequencies of the loaded weights")
++    w.inv_freq = inv_freq(cfg.rope_theta, cfg.rotary_dim, yarn).to(w.inv_freq.device)
++    m = scale32(yarn)
++    layers = [layer for layer in w.layers if layer.attn is not None]
++    if w.mtp is not None and w.mtp.layer.attn is not None:
++        layers.append(w.mtp.layer)
++    seen: set[int] = set()
++    for layer in layers:
++        a = layer.attn
++        for gamma in (a.q_scale, a.k_scale, a.iq_scale, a.ik_scale):
++            if gamma.dtype != torch.float32 or gamma.numel() < cfg.rotary_dim:
++                raise ValueError("YaRN folds its attention factor into fp32 norm gammas of the rotary dims")
++            if gamma.data_ptr() in seen:              # a gamma shared between heads is folded once
++                continue
++            seen.add(gamma.data_ptr())
++            fold(gamma, cfg.rotary_dim, m)
++    low, high = yarn.bounds(cfg.rotary_dim, cfg.rope_theta)
++    w.meta["yarn"] = dict(factor=yarn.factor, original=yarn.original, window=yarn.window, attention=m,
++                          ramp=(low, high), ramp_positions=yarn.ramp_positions or yarn.original)
++    print(f"[tensorfold] Flash Next YaRN: factor {yarn.factor:g} over {yarn.original} positions "
++          f"({yarn.window}-token window), ramp pairs {low}..{high}, attention factor {m:.9g} folded into the "
++          f"q/k and indexer norms of {len(layers)} attention layers", flush=True)
++    return w
+diff -ruN a/tensorfold/vision/native_helper.py b/tensorfold/vision/native_helper.py
+--- a/tensorfold/vision/native_helper.py
++++ b/tensorfold/vision/native_helper.py
+@@ -0,0 +1,243 @@
++"""The Zig engine's vision helper: Python TensorFold's own image and video path, as a child process of
++``tensorfold-native serve --vision``.
++
++The Zig server renders the chat template (image and video parts as ``{"type": "image"}`` / ``{"type": "video"}``)
++and sends each media request here; this process runs exactly what ``tensorfold.server.prompts.prepare_images`` runs
++after its ``split_images``: the sources' checks, ``load_images`` (Pillow), ``load_videos`` (PyAV), the processor's
++``prepare`` (transformers' image processor, the HF tokenizer, the rotary positions) and ``QwenCudaVision.encode``
++(the 27-layer tower on the GPU). So the token ids, positions and visual embeddings are Python's bits by
++construction; the Zig engine only moves them into the prompt rows.
++
++Frames on stdin / stdout, little endian. Request: u32 length, then JSON
++``{"prompt": str, "media": [{"kind": "image"|"video", "url": str, "detail": str}], "max_prompt_tokens": int|null}``.
++Reply: u32 header length, the header JSON, u64 payload length, the payload: token ids u32 [n], feature rows u32 [k]
++(prompt positions, ascending), rotary positions i32 [n, 3], features bf16 [k, width]. An error reply is a header
++``{"ok": false, "status": 400|503, "error": message}`` and an empty payload. The first frame written is the
++ready header (``{"ready": true, ...}``) once the tower is loaded and warm. Logs go to stderr.
++"""
++
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++import os
++import struct
++import sys
++import time
++from dataclasses import replace
++
++# Flash Next's request limits (the single-Spark recipe's patches 0008 and 0009 by MiaAI-Lab): up to 50 images
++# sharing 16,384 visual tokens (each at most 4,096), 10 MB an image, 64 MB and 128 Mi pixels in all; up to two
++# videos (user messages), 64 MB each, 96 MB in all
++MAX_IMAGES, IMAGE_TOKENS = 50, 16384
++IMAGES_TOTAL_BYTES, IMAGES_TOTAL_PIXELS = 64 * 1024 * 1024, 128 * 1024 * 1024
++VIDEO_BYTES, VIDEOS_TOTAL_BYTES = 64 * 1024 * 1024, 96 * 1024 * 1024
++
++
++def _log(message: str) -> None:
++    print(f"[vision-helper] {message}", file=sys.stderr, flush=True)
++
++
++def _read_exact(stream, n: int) -> bytes | None:
++    data = bytearray()
++    while len(data) < n:
++        chunk = stream.read(n - len(data))
++        if not chunk:
++            return None
++        data += chunk
++    return bytes(data)
++
++
++def _write(out, header: dict, payload: list[bytes] = ()) -> None:
++    head = json.dumps(header, separators=(",", ":")).encode()
++    size = sum(len(p) for p in payload)
++    out.write(struct.pack("<I", len(head)) + head + struct.pack("<Q", size))
++    for p in payload:
++        out.write(p)
++    out.flush()
++
++
++class Helper:
++    def __init__(self, model: str, *, allow_urls: bool, max_images: int, image_tokens: int, workspace: int, max_videos: int = 4) -> None:
++        import torch
++
++        from .images import DEFAULT_LIMITS
++        from .qwen_cuda import QwenCudaVision
++        from .videos import DEFAULT_VIDEO_LIMITS
++
++        self.torch = torch
++        torch.cuda.set_device(0)
++        device = torch.device("cuda", 0)
++        started = time.perf_counter()
++        self.vision = QwenCudaVision(model, device, allow_urls=allow_urls)
++        self.allow_urls = allow_urls
++        self.limits = replace(DEFAULT_LIMITS, max_images=max_images, max_visual_tokens=image_tokens,
++                              max_total_encoded_bytes=IMAGES_TOTAL_BYTES, max_total_pixels=IMAGES_TOTAL_PIXELS)
++        self.video_limits = replace(DEFAULT_VIDEO_LIMITS, max_videos=max_videos, max_encoded_bytes=VIDEO_BYTES,
++                                    max_total_encoded_bytes=VIDEOS_TOTAL_BYTES)
++        if workspace > 0:                   # the caching allocator stays inside the tower and the reserved workspace
++            total = torch.cuda.get_device_properties(0).total_memory
++            cap = self.vision.weight_bytes + workspace + (256 << 20)
++            torch.cuda.set_per_process_memory_fraction(min(1.0, cap / total), 0)
++        self.vision.warm()
++        torch.cuda.empty_cache()
++        self.load_s = time.perf_counter() - started
++
++    def ready(self) -> dict:
++        import numpy
++        import PIL
++        import transformers
++
++        try:
++            import av
++            av_version = av.__version__
++        except ImportError:
++            av_version = None
++        raw = self.vision.frontend.config
++        return {"ready": True, "selftest_sha256": self.selftest(), "pid": os.getpid(), "videos": bool(self.vision.videos),
++                "tower_bytes": int(self.vision.weight_bytes), "width": int(self.vision.config["out_hidden_size"]),
++                "image_token_id": int(raw["image_token_id"]), "video_token_id": int(raw.get("video_token_id", -1)),
++                "load_s": round(self.load_s, 3), "reserved": int(self.torch.cuda.memory_reserved()),
++                "versions": {"torch": self.torch.__version__, "transformers": transformers.__version__,
++                             "pillow": PIL.__version__, "numpy": numpy.__version__, "av": av_version}}
++
++    def selftest(self) -> str:
++        """The features sha of a fixed 96x64 PNG through the whole path (Pillow decode, processor, tower): equal
++        wherever the stack (Python packages, CUDA libraries, GPU) is the reference's."""
++
++        import base64
++        import io
++
++        import numpy as np
++        from PIL import Image
++
++        y, x = np.mgrid[0:64, 0:96]
++        pixels = np.stack([(x * 255 // 95), (y * 255 // 63), ((x + y) * 3) % 256], axis=-1).astype(np.uint8)
++        out = io.BytesIO()
++        Image.fromarray(pixels, "RGB").save(out, format="PNG")
++        front = self.vision.frontend
++        prompt = f"{front.vision_start or ''}{front.image_token}{front.vision_end or ''}What is this?"
++        header, _ = self.handle({"prompt": prompt, "media": [
++            {"kind": "image", "url": "data:image/png;base64," + base64.b64encode(out.getvalue()).decode()}]})
++        return header["features_sha256"]
++
++    def prepare(self, request: dict):
++        """``prepare_images`` after ``split_images``: the same checks, loads, processor call and tower call."""
++
++        from .images import ImageInputError, ImageSource, _check_source, load_images
++        from .videos import load_videos, video_source
++
++        prompt, media = request.get("prompt"), request.get("media") or []
++        if not isinstance(prompt, str) or not isinstance(media, list) or not media:
++            raise ImageInputError("a media request needs its rendered prompt and its images or videos")
++        sources = []
++        for item in media:
++            kind = item.get("kind") if isinstance(item, dict) else None
++            if kind == "image":
++                if sum(isinstance(s, ImageSource) for s in sources) >= self.limits.max_images:
++                    raise ImageInputError(
++                        f"a request supports at most {self.limits.max_images} images across the full message "
++                        "history, including prior turns; remove older image content, start a new conversation, "
++                        "or restart the server with --vision-max-images N to raise the count limit (other image "
++                        "limits still apply)")
++                source = ImageSource(item.get("url") or "", item.get("detail") or "auto")
++                _check_source(source, self.limits, self.allow_urls)
++                sources.append(source)
++            elif kind == "video":
++                if not self.vision.videos:
++                    raise ImageInputError("this checkpoint's frontend encodes images only")
++                if sum(not isinstance(s, ImageSource) for s in sources) >= self.video_limits.max_videos:
++                    raise ImageInputError(f"a request supports at most {self.video_limits.max_videos} videos; send fewer, or restart the server with --vision-max-videos N to raise the count limit")
++                sources.append(video_source({"url": item.get("url")}, self.video_limits, self.allow_urls))
++            else:
++                raise ImageInputError("media parts must be images or videos")
++        images = load_images([s for s in sources if isinstance(s, ImageSource)], limits=self.limits,
++                             allow_urls=self.allow_urls)
++        budget = {"max_visual_tokens": self.limits.max_visual_tokens}
++        clips = [s for s in sources if not isinstance(s, ImageSource)]
++        if clips:
++            budget["videos"] = load_videos(clips, self.vision.video_size, limits=self.video_limits,
++                                           allow_urls=self.allow_urls)
++        limit = request.get("max_prompt_tokens")
++        return self.vision.prepare(prompt, images, max_prompt_tokens=int(limit) if limit else None, **budget)
++
++    def handle(self, request: dict) -> tuple[dict, list[bytes]]:
++        import numpy as np
++
++        t0 = time.perf_counter()
++        prepared = self.prepare(request)
++        t1 = time.perf_counter()
++        encoded = self.vision.encode(prepared, prepared.token_ids)
++        torch = self.torch
++        features = encoded.features.contiguous().view(torch.int16).cpu().numpy().tobytes()
++        positions = encoded.positions.t().contiguous().cpu().numpy().astype("<i4").tobytes()
++        tokens = np.asarray(prepared.token_ids, dtype="<u4").tobytes()
++        rows = np.asarray(encoded.rows, dtype="<u4").tobytes()
++        t2 = time.perf_counter()
++        del encoded
++        torch.cuda.empty_cache()
++        header = {"ok": True, "tokens": len(prepared.token_ids), "rows": len(rows) // 4,
++                  "delta": int(prepared.rope_delta), "width": int(self.vision.config["out_hidden_size"]),
++                  "images": len(prepared.image_spans), "video_groups": len(prepared.video_spans),
++                  "videos": len(prepared.video_hashes), "visual_tokens": int(prepared.visual_tokens),
++                  "features_sha256": hashlib.sha256(features).hexdigest(),
++                  "tokens_sha256": hashlib.sha256(tokens).hexdigest(),
++                  "positions_sha256": hashlib.sha256(positions).hexdigest(),
++                  "prepare_s": round(t1 - t0, 4), "encode_s": round(t2 - t1, 4),
++                  "peak": int(torch.cuda.max_memory_reserved())}
++        torch.cuda.reset_peak_memory_stats()
++        return header, [tokens, rows, positions, features]
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    ap.add_argument("--model", required=True)
++    ap.add_argument("--urls", action="store_true", help="also fetch public https:// images and videos")
++    ap.add_argument("--max-images", type=int, default=int(os.environ.get("TENSORFOLD_MAX_IMAGES") or MAX_IMAGES))
++    ap.add_argument("--max-videos", type=int, default=int(os.environ.get("TENSORFOLD_MAX_VIDEOS") or 4))
++    ap.add_argument("--image-tokens", type=int,
++                    default=int(os.environ.get("TENSORFOLD_IMAGE_TOKENS") or IMAGE_TOKENS))
++    ap.add_argument("--workspace-mib", type=int,
++                    default=int(os.environ.get("TENSORFOLD_VISION_WORKSPACE_MIB") or 4096))
++    a = ap.parse_args()
++    if not 1 <= a.max_videos <= 64 or not 1 <= a.max_images <= 256 or not 1 <= a.image_tokens <= 65536 or not 0 <= a.workspace_mib <= 16384:
++        print("--max-images 1..256, --image-tokens 1..65536, --workspace-mib 0..16384", file=sys.stderr)
++        return 2
++    out = sys.stdout.buffer
++    sys.stdout = sys.stderr                  # nothing but frames on the pipe
++    try:
++        helper = Helper(a.model, allow_urls=a.urls, max_images=a.max_images, max_videos=a.max_videos, image_tokens=a.image_tokens,
++                        workspace=a.workspace_mib << 20)
++    except Exception as exc:  # noqa: BLE001 - the parent reads why
++        _write(out, {"ready": False, "error": f"{type(exc).__name__}: {exc}"})
++        return 1
++    _write(out, helper.ready())
++    _log(f"ready: tower {helper.vision.weight_bytes / 2**30:.2f} GiB, loaded in {helper.load_s:.1f} s")
++    from tensorfold.server.errors import CONTEXT_LIMIT
++
++    from .images_http import ImageInputError
++
++    inp = sys.stdin.buffer
++    while True:
++        raw = _read_exact(inp, 4)
++        if raw is None:
++            return 0
++        body = _read_exact(inp, struct.unpack("<I", raw)[0])
++        if body is None:
++            return 0
++        try:
++            header, payload = helper.handle(json.loads(body))
++        except (ImageInputError, ValueError, ImportError) as exc:
++            message = str(exc)
++            code = "context_length_exceeded" if message.startswith(CONTEXT_LIMIT) else None
++            header, payload = {"ok": False, "status": 400, "error": message, "code": code}, []
++        except Exception as exc:  # noqa: BLE001 - one request fails, the helper serves on
++            helper.torch.cuda.empty_cache()
++            _log(f"request failed: {type(exc).__name__}: {exc}")
++            header, payload = {"ok": False, "status": 503, "error": f"vision processing failed ({type(exc).__name__})"}, []
++        _write(out, header, payload)
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff -ruN a/tensorfold/vision/qwen_cuda.py b/tensorfold/vision/qwen_cuda.py
+--- a/tensorfold/vision/qwen_cuda.py
++++ b/tensorfold/vision/qwen_cuda.py
+@@ -44,7 +44,8 @@
+ def vision_config(model_dir: str | Path) -> dict:
+     raw = json.loads((Path(model_dir) / "config.json").read_text())
+     config = raw.get("vision_config")
+-    if not isinstance(config, dict) or config.get("model_type") not in ("qwen3_5", "qwen4_exp"):
++    # NVIDIA's Flash Next NVFP4 checkpoint names its tower ``qwen4_exp_vision`` (the same tower as qwen4_exp's)
++    if not isinstance(config, dict) or config.get("model_type") not in ("qwen3_5", "qwen4_exp", "qwen4_exp_vision"):
+         raise ValueError("CUDA vision requires a Qwen3.5-compatible vision checkpoint")
+     if config.get("deepstack_visual_indexes"):
+         raise ValueError("CUDA Qwen vision does not support deepstack image features")

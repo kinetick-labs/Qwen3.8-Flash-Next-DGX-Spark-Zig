@@ -61,3 +61,30 @@ their prompts match the lane-off server's token for token; hermes2 completion 35
 Vision on 082aee98a: text, counting, chart, table, photo and multi-image checks 14/15 (the 15th is an agent with a
 terminal tool that computed the table total through the tool, as asked); a 5184x2920 MPO camera photo is accepted
 (4,117 prompt tokens, 4.4 s) and read correctly; animated PNG and WebP are refused.
+
+
+# Bench — prod 082aee98a, 2026-11-16 (Spark GB10, this recipe)
+
+Single-stream restore checks of the prod server after each of today's 8 test windows (temperature 0, same prompts as
+the deploy gate). `/health` answered 200 96–99 s after each start.
+
+| check | decode fib | decode chat | decode fr | hashes (fib / chat / fr) | TC2 |
+|---|---|---|---|---|---|
+| range over 8 restores | 112.6–113.6 | 47–48 | 49.8–51.8 | c93c652df0a0 / 49127283b123 / 4de58665d0fb every time | 7/7 every time |
+
+Agent jobs on prod (Mercury): `veille-colombages` weekly run 2026-11-13: 65 min, 3.08M tokens in / 79k out,
+67 steps, 78 tool calls; `veille-dgx` 2026-11-14: 125 s, 52.7k / 1.8k, 7 steps; 2026-11-15: 127 s, 37k / 1.9k,
+5 steps, 4 tool calls.
+
+## Concurrency c1–c4 (decode, 2026-10-17, earlier FP4-Local build, not this pin)
+
+4 lanes, drafts on, before the DFlash2 drafter and srf; 256 tokens a stream, temperature 0, every output equal to the
+same request alone. Prefill under concurrency was not measured; on this pin only c1 (above) and the 3-agent session
+(`ma.py`: decode avg 33.5 / min 26.7 tok/s a stream) exist.
+
+| streams | code total / per stream tok/s | chat total / per stream tok/s | TTFT max code / chat |
+|---|---|---|---|
+| 1 | 67.1 / 67.2 | 52.7 / 52.8 | 0.09 / 0.13 s |
+| 2 | 120.8 / 61.1 | 93.6 / 47.3 | 0.19 / 0.26 s |
+| 3 | 135.7 / 46.3 | 111.1 / 37.8 | 0.28 / 0.39 s |
+| 4 | 204.0 / 52.5 | 164.9 / 42.5 | 0.37 / 0.52 s |

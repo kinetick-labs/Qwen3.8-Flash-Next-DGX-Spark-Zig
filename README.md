@@ -45,6 +45,42 @@ Measured on this pin (`082aee98a`, Spark GB10, same serve.sh as prod :8083, depl
 baseline): solo prefill 14k 2,291 tok/s (baseline 2,276); decode fib 112.7 / chat 47.3 / fr 50.9 tok/s with the same
 greedy decode hashes (fib `c93c652df0a0`, chat `49127283b123`, fr `4de58665d0fb`); TC2 7/7; crash repro pass.
 
+## Latest results (2026-11-16, prod `082aee98a`, Spark GB10)
+
+- **Decode** (single stream, temperature 0, 8 restore checks of the prod server on 2026-11-16): fib **112.6–113.6**,
+  chat **47–48**, fr **49.8–51.8** tok/s. The greedy hashes stayed the same every time (fib `c93c652df0a0`, chat
+  `49127283b123`, fr `4de58665d0fb`), TC2 passed 7/7, and `/health` answered 200 about 96–99 s after a cold start.
+- **Prefill:** 14k tokens solo at **2,291 tok/s** (deploy gate of this pin). No newer prefill measurement.
+- **Agent jobs on prod** (Mercury bots, same server):
+
+  | job | wall time | tokens in / out | steps / tool calls |
+  |---|---|---|---|
+  | `veille-colombages` (weekly property watch, vision on listing photos), 2026-11-13 | 65 min | 3.08M / 79k | 67 / 78 |
+  | `veille-dgx` (daily DGX Spark offer watch), 2026-11-14 | 125 s | 52.7k / 1.8k | 7 / — |
+  | `veille-dgx`, 2026-11-15 | 127 s | 37k / 1.9k | 5 / 4 |
+
+### Concurrency (c1–c4)
+
+Only measured numbers are shown; "not measured" means no run exists for that cell.
+
+| streams | prefill | decode, this pin |
+|---|---|---|
+| c1 | 2,291 tok/s (14k solo) | 112.6–113.6 fib / 47–48 chat / 49.8–51.8 fr tok/s |
+| c2 | not measured | not measured |
+| c3 | not measured alone | 3-agent session (`ma.py`, 3 agents x 2 turns, prompts filling beside decode): avg 33.5, min 26.7 tok/s per stream |
+| c4 | not measured | not measured (prod serves 3 lanes) |
+
+An older c1–c4 decode run, on **2026-10-17**, used an earlier FP4-Local build, not this pin: 4 lanes, drafts on,
+before the DFlash2 drafter and srf scheduling. It ran 256 tokens a stream at temperature 0, and every output was
+equal to the same request run alone.
+
+| streams | code: total / per stream tok/s | chat: total / per stream tok/s | TTFT max |
+|---|---|---|---|
+| c1 | 67.1 / 67.2 | 52.7 / 52.8 | 0.09 / 0.13 s |
+| c2 | 120.8 / 61.1 | 93.6 / 47.3 | 0.19 / 0.26 s |
+| c3 | 135.7 / 46.3 | 111.1 / 37.8 | 0.28 / 0.39 s |
+| c4 | 204.0 / 52.5 | 164.9 / 42.5 | 0.37 / 0.52 s |
+
 ## 1. Checkpoint and drafter
 
 ```bash
@@ -52,15 +88,46 @@ huggingface-cli download nvidia/Qwen3.8-Flash-Next-FP4-Local --revision b9ce18a6
 # DFlash2 drafter in ~/models/qwen38-dflash2, bf16 vision tower in ~/models/sxuff-vision-bf16/vision_tower_bf16.safetensors
 ```
 
-## 2. Runner image
+## 2. Runtime image
+
+serve.sh runs `tensorfold-native` (built in step 3, mounted from `$ROOT`) inside a local runtime image. Two scripts
+build it, no GPU needed (the Qwen server can keep running):
 
 ```bash
-scripts/runner-image/build.sh       # tensorfold-zig:exl3-572414d -> tensorfold-zig:exl3-572414d-runner
+scripts/build-image.sh              # -> tensorfold-zig:runtime-pt2607         (image/Dockerfile)
+scripts/runner-image/build.sh       # -> tensorfold-zig:runtime-pt2607-runner  (the tag serve.sh runs)
 ```
 
-Adds clang-18/lld-18 and Jay Leaton's `runner-assets-20261107` (`calc.tfpc`, `graph-v7-powmod` bank), downloaded and
-checked file by file with his `scripts/fetch_runner_assets.py` and pins (`config/runner-assets.*` in
-jayleaton/qwen4-tensorfold-spark). serve.sh refuses to start without the image.
+`scripts/build-image.sh` (`image/Dockerfile`, multi-stage):
+
+- **Base:** `nvcr.io/nvidia/pytorch:26.07-py3`, pinned by digest (CUDA 13 libraries, torch, Triton 3.7.1, Python
+  3.12). The 36.5 GB base is pulled once; after that the build takes under a minute on a Spark.
+- **Vision helper package:** `--vision-helper` runs `python3 -m tensorfold.vision.native_helper`. The image carries
+  the Python package at `/opt/tensorfold/python`: upstream ashhart/TensorFold `4af95036e` (the last tree with the
+  Python engine, before 1.0.0) plus `image/python-overlay.patch` (the helper, the FP8 KV kernels and the Flash Next
+  kernel sources), with transformers 5.17.0 and PyAV 19.0.1.
+- **Kernel set:** the mia engine replays a captured Triton kernel set from `TENSORFOLD_CUDA_KERNELS`
+  (`/opt/tensorfold/share/tensorfold/cuda/sm121`: `aot.json` + 320 cubins).
+  - The build compiles it for sm_121 without a GPU, using `tools/zig/flashnext_aot.py` and the spec in
+    TensorFold `082aee98a`.
+  - It then checks every cubin's sha256 against `image/sm121-kernels.txt`.
+  - `image/python-mtimes.txt` restores the source mtimes that Triton writes into the line tables, so the cubins come
+    out byte-identical.
+- **Runner layer:** `scripts/runner-image/build.sh` adds clang-18/lld-18 and Jay Leaton's `runner-assets-20261107`
+  (`calc.tfpc`, `graph-v7-powmod` bank). His `scripts/fetch_runner_assets.py` downloads them and checks them file by
+  file against his pins (`config/runner-assets.*` in jayleaton/qwen4-tensorfold-spark).
+
+serve.sh refuses to start without the image; `IMAGE=` selects another tag.
+
+Checked on our Spark (2026-11-16) against the image prod runs (`tensorfold-zig:exl3-572414d-runner`, built 2026-10-09):
+
+- **Identical:**
+  - the kernel set: `aot.json` and all 320 cubins, byte for byte;
+  - `pip freeze`;
+  - the libraries `tensorfold-native` resolves (`ldd`, nothing missing);
+  - the runner assets and clang/lld 18.1.3.
+- **Differences:** one comment line in `families/qwen4_exp/cuda/kv8.py`, same length, so the cubins do not change.
+  The new runner layer also ships the Qwenputer MIT notice.
 
 ## 3. Build and install
 
@@ -93,8 +160,10 @@ Checks after start: `/health` 200, a text and an image chat, `tool_choice: requi
 - **Jay Leaton** (jayleaton): the compute lane (built-in sandboxed python tool), the in-model runner and digit stop,
   their runner assets and knob profile (jayleaton/qwen4-tensorfold-spark, Apache-2.0, see its NOTICE), and the
   upstream strict-tool / grammar work our grammar hooks follow.
+- `image/python-overlay.patch` keeps the attributions in its files: the vision helper's request limits follow
+  MiaAI-Lab's single-Spark recipe (patches 0008 and 0009), and the FP8 KV rows follow their row format.
 - **Kinetick-labs** (tournierjc): DFlash2 integration, the compute lane's Flash-Next wiring, tool-less default and MPO fix, srf and cache-resume prefill scheduling, adaptive busy chunks,
-  fp8 KV prod config and this recipe.
+  fp8 KV prod config, the runtime image build and this recipe.
 
 Previous recipe (EXL3 4.05 bpw on the Zig engine): commit `434f376` of this repository.
 

@@ -1,8 +1,8 @@
-# Qwen3.8 Flash-Next FP4-Local on one DGX Spark — TensorFold (kinetick-labs rebase/1.3.1)
+# Qwen3.8 Flash-Next FP4-Local on one DGX Spark — TensorFold (kinetick-labs main, upstream v1.3.1)
 
 Serves **Qwen3.8 Flash-Next FP4-Local** (`nvidia/Qwen3.8-Flash-Next-FP4-Local`, rev `b9ce18a6`) on **one NVIDIA GB10**
 with the native Zig engine (`tensorfold-native`, mia engine) of
-[kinetick-labs/TensorFold](https://github.com/kinetick-labs/TensorFold) **`rebase/upstream-20261120` @ `943435dac`**:
+[kinetick-labs/TensorFold](https://github.com/kinetick-labs/TensorFold) **`main` @ `943435dac`**:
 upstream [ashhart/TensorFold](https://github.com/ashhart/TensorFold) v1.3.1 (`5e1e1912e`) plus every unit of our engine
 work replayed on it (209 units: the Flash Next mia engine, mid-prefill drain fix, `TENSORFOLD_PREFILL_POLICY=srf`, the
 DFlash2 frame-attention fix, the EXL3 and MXFP8 families) and **Jay Leaton's compute lane and in-model runner** ([jayleaton/qwen4-tensorfold-spark](https://github.com/jayleaton/qwen4-tensorfold-spark),
@@ -144,7 +144,7 @@ Checked on our Spark (2026-11-16) against the image prod runs (`tensorfold-zig:e
 TF_DIR=$HOME/TensorFold ROOT=$HOME/tf-prod-df2g LIBS_FROM=/path/to/libs scripts/build.sh
 ```
 
-Builds `rebase/upstream-20261120` @ `943435dac` ReleaseFast (Zig 0.17, CUDA nvcc, sm_121) and installs `bin/tensorfold-native`, `libs/`
+Builds `main` @ `943435dac` ReleaseFast (Zig 0.17, CUDA nvcc, sm_121) and installs `bin/tensorfold-native`, `libs/`
 and `COMMIT` under `$ROOT`. **Grammar library:** strict tools and `json_schema` need `libtfgrammar.so` (Linux aarch64)
 in `$ROOT/libs`: take it from a TensorFold release (pinned grammar runtime) or build it with
 `zig build grammar -Dxgrammar=DIR`; `libturbojpeg` / `libwebpdecoder` there serve image input.

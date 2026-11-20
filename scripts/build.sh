@@ -3,8 +3,8 @@
 # and install it with its runtime libraries under a stable root ($ROOT, default ~/tf-prod-df2g).
 set -euo pipefail
 TF_DIR="${TF_DIR:-$HOME/TensorFold}"
-TF_BRANCH="${TF_BRANCH:-rebase/upstream-20261120}"   # our fork's pin: upstream v1.3.1 + our engine units (main still at 082aee98a)
-TF_REF="${TF_REF:-943435dac}"   # kinetick-labs/TensorFold rebase/upstream-20261120 (ashhart v1.3.1 5e1e1912e + our work)
+TF_BRANCH="${TF_BRANCH:-main}"   # our fork's main: upstream v1.3.1 + our engine units (rebased 2026-11-20)
+TF_REF="${TF_REF:-943435dac}"   # kinetick-labs/TensorFold main (ashhart v1.3.1 5e1e1912e + our 209 units, rebased 2026-11-20)
 ROOT="${ROOT:-$HOME/tf-prod-df2g}"
 LIBS_FROM="${LIBS_FROM:-}"      # a directory with libtfgrammar.so, libturbojpeg.so*, libwebpdecoder.so* (see README)
 ZIG="${ZIG:-$(command -v zig || echo "$HOME/zig-0.17.0/zig")}"

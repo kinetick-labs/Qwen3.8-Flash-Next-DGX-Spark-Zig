@@ -20,8 +20,8 @@ FROM ${BASE_IMAGE} AS kernels
 ARG TF_REPO=https://github.com/kinetick-labs/TensorFold
 # the Python tree: upstream 4af95036e ("lean_check: ..."), parent of 394d566cb "TensorFold 1.0.0 is the Zig engine"
 ARG TF_PY_REF=4af95036e59e86188b381bdc66ad3a0be664ad15
-# the kernel spec and its compiler: kinetick-labs/TensorFold main 082aee98a
-ARG TF_AOT_REF=082aee98a4e9247a9a3732291fba1b8884e14416
+# the kernel spec and its compiler: kinetick-labs/TensorFold rebase/upstream-20261120 943435dac (spec identical to 082aee98a)
+ARG TF_AOT_REF=943435dac2a7f7af60b8c512ab195cb8d774273b
 ARG JOBS=8
 COPY python-overlay.patch python-mtimes.txt sm121-kernels.txt kernel-set.py /ctx/
 RUN set -eu; \

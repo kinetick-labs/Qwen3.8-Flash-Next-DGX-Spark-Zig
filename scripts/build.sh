@@ -3,14 +3,15 @@
 # and install it with its runtime libraries under a stable root ($ROOT, default ~/tf-prod-df2g).
 set -euo pipefail
 TF_DIR="${TF_DIR:-$HOME/TensorFold}"
-TF_REF="${TF_REF:-082aee98a}"   # kinetick-labs/TensorFold main (upstream ashhart/TensorFold d6c4cce60 / 1.2.8 + Jay Leaton's compute lane + our work)
+TF_BRANCH="${TF_BRANCH:-rebase/upstream-20261120}"   # our fork's pin: upstream v1.3.1 + our engine units (main still at 082aee98a)
+TF_REF="${TF_REF:-943435dac}"   # kinetick-labs/TensorFold rebase/upstream-20261120 (ashhart v1.3.1 5e1e1912e + our work)
 ROOT="${ROOT:-$HOME/tf-prod-df2g}"
 LIBS_FROM="${LIBS_FROM:-}"      # a directory with libtfgrammar.so, libturbojpeg.so*, libwebpdecoder.so* (see README)
 ZIG="${ZIG:-$(command -v zig || echo "$HOME/zig-0.17.0/zig")}"
 NVCC="${NVCC:-/usr/local/cuda/bin/nvcc}"
 [[ -d "$TF_DIR/.git" ]] || git clone https://github.com/kinetick-labs/TensorFold "$TF_DIR"
 cd "$TF_DIR"
-git fetch origin main
+git fetch origin "$TF_BRANCH"
 git checkout --detach "$TF_REF"
 echo "[build] $(git log -1 --format='%h %s')"
 "$ZIG" version | grep -q '^0\.17\.' || { echo "[build] Zig 0.17.x required (.zig-version)" >&2; exit 2; }

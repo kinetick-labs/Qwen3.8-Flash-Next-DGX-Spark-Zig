@@ -1,11 +1,11 @@
-# Qwen3.8 Flash-Next FP4-Local on one DGX Spark — TensorFold (kinetick-labs main)
+# Qwen3.8 Flash-Next FP4-Local on one DGX Spark — TensorFold (kinetick-labs rebase/1.3.1)
 
 Serves **Qwen3.8 Flash-Next FP4-Local** (`nvidia/Qwen3.8-Flash-Next-FP4-Local`, rev `b9ce18a6`) on **one NVIDIA GB10**
 with the native Zig engine (`tensorfold-native`, mia engine) of
-[kinetick-labs/TensorFold](https://github.com/kinetick-labs/TensorFold) **`main` @ `082aee98a`**: upstream
-[ashhart/TensorFold](https://github.com/ashhart/TensorFold) main `d6c4cce60` (v1.2.8) plus our engine work (mid-prefill
-drain fix, `TENSORFOLD_PREFILL_POLICY=srf` accepted again, DFlash2 frame-attention call fix) and **Jay Leaton's compute
-lane and in-model runner** ([jayleaton/qwen4-tensorfold-spark](https://github.com/jayleaton/qwen4-tensorfold-spark),
+[kinetick-labs/TensorFold](https://github.com/kinetick-labs/TensorFold) **`rebase/upstream-20261120` @ `943435dac`**:
+upstream [ashhart/TensorFold](https://github.com/ashhart/TensorFold) v1.3.1 (`5e1e1912e`) plus every unit of our engine
+work replayed on it (209 units: the Flash Next mia engine, mid-prefill drain fix, `TENSORFOLD_PREFILL_POLICY=srf`, the
+DFlash2 frame-attention fix, the EXL3 and MXFP8 families) and **Jay Leaton's compute lane and in-model runner** ([jayleaton/qwen4-tensorfold-spark](https://github.com/jayleaton/qwen4-tensorfold-spark),
 Apache-2.0; his 33 commits keep his authorship). `scripts/build.sh` pins it.
 
 This is the configuration running in Kinetick-labs prod (port 8083).
@@ -41,11 +41,14 @@ left, counted from the cache match), short or resumed prompts start between its 
 decodes the long prompt advances one layer and 1024 rows at a time. Result on the previous pin: decode min 31 tok/s
 (was ~5), later turns under 1.4 s, solo prefill unchanged (bench/results.md).
 
-Measured on this pin (`082aee98a`, Spark GB10, same serve.sh as prod :8083, deploy gate against the `17334bddd`
+Measured on the previous pin (`082aee98a`, Spark GB10, same serve.sh as prod :8083, deploy gate against the `17334bddd`
 baseline): solo prefill 14k 2,291 tok/s (baseline 2,276); decode fib 112.7 / chat 47.3 / fr 50.9 tok/s with the same
 greedy decode hashes (fib `c93c652df0a0`, chat `49127283b123`, fr `4de58665d0fb`); TC2 7/7; crash repro pass.
 
 ## Latest results (2026-11-16, prod `082aee98a`, Spark GB10)
+
+**Not re-measured on the `943435dac` pin yet** — the figures below are the previous pin's, kept as the reference the
+next bench run compares against.
 
 - **Decode** (single stream, temperature 0, 8 restore checks of the prod server on 2026-11-16): fib **112.6–113.6**,
   chat **47–48**, fr **49.8–51.8** tok/s. The greedy hashes stayed the same every time (fib `c93c652df0a0`, chat
@@ -114,7 +117,8 @@ scripts/runner-image/build.sh       # -> tensorfold-zig:runtime-pt2607-runner  (
 - **Kernel set:** the mia engine replays a captured Triton kernel set from `TENSORFOLD_CUDA_KERNELS`
   (`/opt/tensorfold/share/tensorfold/cuda/sm121`: `aot.json` + 320 cubins).
   - The build compiles it for sm_121 without a GPU, using `tools/zig/flashnext_aot.py` and the spec in
-    TensorFold `082aee98a`.
+    TensorFold `943435dac`. The spec (`zig/tests/cuda/flashnext/kernels.json`) is **byte-identical** to `082aee98a`'s,
+    so the captured 320-cubin set and `image/sm121-kernels.txt` still match: no re-capture needed for a rebuild.
   - It then checks every cubin's sha256 against `image/sm121-kernels.txt`.
   - `image/python-mtimes.txt` restores the source mtimes that Triton writes into the line tables, so the cubins come
     out byte-identical.
@@ -140,7 +144,7 @@ Checked on our Spark (2026-11-16) against the image prod runs (`tensorfold-zig:e
 TF_DIR=$HOME/TensorFold ROOT=$HOME/tf-prod-df2g LIBS_FROM=/path/to/libs scripts/build.sh
 ```
 
-Builds `main` @ `082aee98a` ReleaseFast (Zig 0.17, CUDA nvcc, sm_121) and installs `bin/tensorfold-native`, `libs/`
+Builds `rebase/upstream-20261120` @ `943435dac` ReleaseFast (Zig 0.17, CUDA nvcc, sm_121) and installs `bin/tensorfold-native`, `libs/`
 and `COMMIT` under `$ROOT`. **Grammar library:** strict tools and `json_schema` need `libtfgrammar.so` (Linux aarch64)
 in `$ROOT/libs`: take it from a TensorFold release (pinned grammar runtime) or build it with
 `zig build grammar -Dxgrammar=DIR`; `libturbojpeg` / `libwebpdecoder` there serve image input.
@@ -181,7 +185,7 @@ attributions of the engine.
 
 **Engine**
 - **TensorFold**: [ashhart](https://github.com/ashhart) and [contributors](https://github.com/ashhart/TensorFold/graphs/contributors)
-  ([ashhart/TensorFold](https://github.com/ashhart/TensorFold) v1.2.8 `d6c4cce60`, Apache-2.0): the native Zig/CUDA
+  ([ashhart/TensorFold](https://github.com/ashhart/TensorFold) v1.3.1 `5e1e1912e`, Apache-2.0): the native Zig/CUDA
   engine, and the Python image path the vision helper runs (Flash Next CUDA image input by
   [Shantanu Goel](https://github.com/shantanugoel), upstream #146).
 - **MiaAI-Lab** ([GitHub](https://github.com/MiaAI-Lab)): the mia engine for Flash Next and the layer-sliced prefill
